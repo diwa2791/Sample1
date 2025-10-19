@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Pods - K8s Dashboard</title>
+  
+  <link rel="stylesheet" th:href="@{/styles.css}" />
+      <script defer th:src="@{/sidebar.js}"></script>
+</head>
+
+<!-- 
+  Use the shared layout.html as a wrapper
+  Parameters:
+    1️⃣ pageName = 'pods' → highlights the correct sidebar link
+    2️⃣ title = 'Pods - K8s Dashboard' → page title
+-->
+<div th:replace="layout :: layout('pods','Pods - K8s Dashboard')">
+
+  <!-- Define this page's specific content -->
+  <div th:fragment="content">
+
+    <!-- 🔹 Summary Cards -->
+    <section class="summary">
+      <div class="card">
+        <div class="card-title">Running (1/1)</div>
+        <div id="count-running" class="card-value">0</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Pending (Creating)</div>
+        <div id="count-pending" class="card-value">0</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Abnormal</div>
+        <div id="count-abnormal" class="card-value">0</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Services (0 pods)</div>
+        <div id="count-services-zero" class="card-value">0</div>
+      </div>
+    </section>
+
+    <!-- 📋 Pods Table -->
+    <section class="table-wrap">
+      <table id="podsTable">
+        <thead>
+          <tr>
+            <th style="width:40%;">Name</th>
+            <th>Status</th>
+            <th>Namespace</th>
+            <th>Age</th>
+            <th style="width:180px;">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="podsBody">
+          <!-- Optional server-side initial render -->
+          <tr th:each="pod : ${pods}">
+            <td th:text="${pod.name}">pod-name</td>
+            <td><span class="badge" th:text="${pod.status}" th:classappend="${pod.status}">Running</span></td>
+            <td th:text="${pod.namespace}">default</td>
+            <td th:text="${pod.age}">1m</td>
+            <td>
+              <button class="btn small restart-btn"
+                      th:attr="data-pod=${pod.name},data-ns=${pod.namespace}">Restart</button>
+              <a th:href="@{|/logs/${pod.name}?namespace=${pod.namespace}|}"
+                 class="btn outline small">Logs</a>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- ⚙️ Client-side Script -->
+    <script th:inline="javascript">
+      const podsBody = document.getElementById('podsBody');
+      const searchInput = document.getElementById('search');
+      const refreshBtn = document.getElementById('refreshBtn');
+      const namespaceSelect = document.getElementById('namespaceSelect');
+      let currentNamespace = 'all';
+
+      /* 🔹 Load namespaces */
+      async function loadNamespaces() {
+          try {
+              const res = await fetch('/api/namespaces');
+              if (!res.ok) throw new Error('Failed to load namespaces');
+              const namespaces = await res.json();
+              namespaceSelect.innerHTML = '';
+              const allOpt = document.createElement('option');
+              allOpt.value = 'all'; allOpt.textContent = 'All namespaces';
+              namespaceSelect.appendChild(allOpt);
+              namespaces.forEach(ns => {
+                  const opt = document.createElement('option');
+                  opt.value = ns; opt.textContent = ns;
+                  namespaceSelect.appendChild(opt);
+              });
+              namespaceSelect.value = currentNamespace;
+          } catch (e) {
+              console.error('loadNamespaces error', e);
+              namespaceSelect.innerHTML = '<option value="all">All namespaces</option>';
+          }
+      }
+
+      /* 🔹 Render Pod Row */
+      function createPodRow(p) {
+          const tr = document.createElement('tr');
+          tr.className = 'pod-row';
+
+          const nameTd = document.createElement('td');
+          nameTd.textContent = p.name;
+
+          const statusTd = document.createElement('td');
+          const badge = document.createElement('span');
+          badge.className = 'badge ' + (p.status || 'Unknown');
+          badge.textContent = p.status || 'Unknown';
+          statusTd.appendChild(badge);
+
+          const nsTd = document.createElement('td');
+          nsTd.textContent = p.namespace;
+
+          const ageTd = document.createElement('td');
+          ageTd.textContent = p.age || '-';
+
+          const actionsTd = document.createElement('td');
+          const restartBtn = document.createElement('button');
+          restartBtn.className = 'btn small restart-btn';
+          restartBtn.textContent = 'Restart';
+          restartBtn.dataset.pod = p.name;
+          restartBtn.dataset.ns = p.namespace;
+          restartBtn.onclick = async () => await restartPod(p.namespace, p.name);
+
+          const logsA = document.createElement('a');
+          logsA.className = 'btn outline small';
+          logsA.href = '/logs/' + encodeURIComponent(p.name) + '?namespace=' + encodeURIComponent(p.namespace);
+          logsA.textContent = 'Logs';
+
+          actionsTd.appendChild(restartBtn);
+          actionsTd.appendChild(logsA);
+
+          tr.append(nameTd, statusTd, nsTd, ageTd, actionsTd);
+          return tr;
+      }
+
+      /* 🔹 Fetch + render pods and summary */
+      async function fetchSummaryAndRender() {
+          try {
+              const ns = currentNamespace;
+              const [podsRes, summaryRes] = await Promise.all([
+                  fetch(`/api/pods?namespace=${encodeURIComponent(ns)}`),
+                  fetch(`/api/summary?namespace=${encodeURIComponent(ns)}`)
+              ]);
+              const pods = await podsRes.json();
+              const summary = await summaryRes.json();
+
+              document.getElementById('count-running').textContent = summary.running ?? 0;
+              document.getElementById('count-pending').textContent = summary.pending ?? 0;
+              document.getElementById('count-abnormal').textContent = summary.abnormal ?? 0;
+              document.getElementById('count-services-zero').textContent = summary.servicesWithZeroPods ?? 0;
+
+              const filter = (searchInput.value || '').toLowerCase();
+              podsBody.innerHTML = '';
+              pods.filter(p => p.name.toLowerCase().includes(filter) ||
+                               p.namespace.toLowerCase().includes(filter))
+                  .forEach(p => podsBody.appendChild(createPodRow(p)));
+          } catch (e) {
+              console.error('Error fetching pods/summary', e);
+          }
+      }
+
+	  async function restartPod(namespace, podName) {
+	      if (!confirm("Restart pod " + podName + " in " + namespace + "?")) return;
+	      try {
+	          const res = await fetch(
+	              "/restart/" + encodeURIComponent(podName) + "?namespace=" + encodeURIComponent(namespace),
+	              {
+	                  method: "POST",
+	                  headers: { "Accept": "application/json" }
+	              }
+	          );
+	          if (!res.ok) {
+	              const body = await res.json().catch(() => ({}));
+	              alert("Failed: " + (body.message || res.statusText));
+	              return;
+	          }
+	          await fetchSummaryAndRender();
+	      } catch (err) {
+	          alert("Error restarting pod: " + err.message);
+	      }
+	  }
+
+
+      /* 🔹 Bind events */
+      refreshBtn.addEventListener('click', fetchSummaryAndRender);
+      searchInput.addEventListener('input', fetchSummaryAndRender);
+      namespaceSelect.addEventListener('change', () => {
+          currentNamespace = namespaceSelect.value;
+          fetchSummaryAndRender();
+      });
+
+      /* 🔹 Init */
+      (async function init() {
+          await loadNamespaces();
+          await fetchSummaryAndRender();
+          setInterval(fetchSummaryAndRender, 5000);
+      })();
+    </script>
+  </div>
+</div>
+
+</html>

@@ -1,0 +1,5 @@
+com\example\k8sui\controller\K8sController.class
+com\example\k8sui\model\PodInfo.class
+com\example\k8sui\model\Summary.class
+com\example\k8sui\main\K8sUiDashboardApplication.class
+com\example\k8sui\service\K8sService.class
