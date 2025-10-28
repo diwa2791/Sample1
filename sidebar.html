@@ -1,0 +1,57 @@
+<!-- src/main/resources/static/fragments/sidebar.html -->
+<aside class="sidebar" id="appSidebar" aria-label="Main navigation">
+  <div class="sidebar-inner">
+    <nav class="nav">
+      <ul>
+        <li class="nav-item">
+          <a href="/pods.html" class="nav-link" data-page="dashboard">
+            <span class="icon">🏠</span>
+            <span class="label">Dashboard</span>
+          </a>
+        </li>
+
+        <li class="nav-item nav-has-sub">
+          <button class="nav-link sub-toggle" aria-expanded="false">
+            <span class="icon">📦</span>
+            <span class="label">Workloads</span>
+            <span class="chev">▸</span>
+          </button>
+          <ul class="sub-list">
+            <li><a href="/pods.html" class="nav-sublink" data-page="pods">Pods</a></li>
+            <li><a href="/deployments.html" class="nav-sublink" data-page="deployments">Deployments</a></li>
+          </ul>
+        </li>
+
+        <li class="nav-item">
+          <a href="/services.html" class="nav-link" data-page="services">
+            <span class="icon">🔗</span>
+            <span class="label">Services</span>
+          </a>
+        </li>
+
+        <li class="nav-item">
+          <a href="/config.html" class="nav-link" data-page="configmaps">
+            <span class="icon">🗃️</span>
+            <span class="label">ConfigMaps</span>
+          </a>
+        </li>
+
+        <li class="nav-item">
+          <a href="/logs.html" class="nav-link" data-page="logs">
+            <span class="icon">📜</span>
+            <span class="label">Logs</span>
+          </a>
+        </li>
+
+        <li class="nav-divider"></li>
+
+        <li class="nav-item">
+          <a href="/settings.html" class="nav-link" data-page="settings">
+            <span class="icon">⚙️</span>
+            <span class="label">Settings</span>
+          </a>
+        </li>
+      </ul>
+    </nav>
+  </div>
+</aside>
