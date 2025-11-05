@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SR2025 XML Validator</title>
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- Sidebar accent (purely visual) -->
+    <div class="accent"></div>
+
+    <!-- Two-column layout -->
+    <main class="panel">
+      <!-- LEFT: controls -->
+      <section class="left">
+        <header>
+          <h1>SR2025 Validator</h1>
+          <p class="muted">Validate ISO 20022 XML against SR2025 XSD</p>
+        </header>
+
+        <label class="label">Message Type</label>
+        <select id="msgType" class="select">
+          <option value="pacs.008">pacs.008</option>
+          <option value="pacs.009">pacs.009</option>
+          <option value="pain.001">pain.001</option>
+          <option value="camt.053">camt.053</option>
+        </select>
+
+        <label class="label mt">XML Message</label>
+        <textarea id="xmlBox" class="textarea" placeholder="Paste your XML here..."></textarea>
+
+        <div class="btn-row">
+          <button id="runBtn" class="btn-primary">Run Validation</button>
+          <span id="spinner" class="spinner hidden"></span>
+        </div>
+      </section>
+
+      <!-- RIGHT: results (errors/success) -->
+      <section class="right">
+        <header class="right-head">
+          <h2>Results</h2>
+          <span class="chip" id="statusChip">Idle</span>
+        </header>
+
+        <pre id="results" class="results">
+<!-- results show here -->
+        </pre>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const runBtn = document.getElementById('runBtn');
+    const msgType = document.getElementById('msgType');
+    const xmlBox  = document.getElementById('xmlBox');
+    const results = document.getElementById('results');
+    const chip    = document.getElementById('statusChip');
+    const spinner = document.getElementById('spinner');
+
+    function setChip(text, kind) {
+      chip.textContent = text;
+      chip.className = 'chip ' + (kind || '');
+    }
+
+    runBtn.addEventListener('click', async () => {
+      const xml = xmlBox.value.trim();
+      if (!xml) {
+        setChip('No XML', 'warn');
+        results.textContent = 'Please paste an XML message.';
+        return;
+      }
+      setChip('Validating…', 'info');
+      spinner.classList.remove('hidden');
+      results.textContent = '';
+
+      try {
+        const resp = await fetch('/validate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ msgType: msgType.value, xml })
+        });
+        const data = await resp.json();
+
+        if (data.valid) {
+          setChip('VALID', 'ok');
+          results.textContent = '✅ XML is VALID.\n\nDetails:\n' + (data.details || '—');
+        } else {
+          setChip('INVALID', 'err');
+          results.textContent = '❌ INVALID XML.\n\n' + (data.error || 'Unknown error');
+        }
+      } catch (e) {
+        setChip('Error', 'err');
+        results.textContent = 'Request failed:\n' + e.message;
+      } finally {
+        spinner.classList.add('hidden');
+      }
+    });
+  </script>
+</body>
+</html>
