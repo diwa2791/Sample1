@@ -1,0 +1,46 @@
+:root{
+  --bg:#0f1420;
+  --panel:#171c2a;
+  --accent-grad: linear-gradient(180deg,#7a2cff, #ee2aa6);
+  --text:#e7e9ef;
+  --muted:#8a90a4;
+  --line:#242b3d;
+  --ok:#20c997;
+  --err:#ef476f;
+  --warn:#ffb703;
+  --info:#3fa9f5;
+  --btn:#7a2cff;
+  --btn-hover:#6a22e4;
+  --input:#121827;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:14px/1.45 Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
+.app{display:flex;height:100%}
+.accent{width:16px;background:var(--accent-grad)}
+.panel{display:grid;grid-template-columns:1fr 1fr;gap:16px;width:100%;padding:24px}
+.left,.right{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;display:flex;flex-direction:column;min-height:0}
+header h1, header h2{margin:0 0 4px 0}
+.muted{color:var(--muted);margin:0 0 12px 0}
+.label{font-weight:600;margin:12px 0 6px}
+.mt{margin-top:14px}
+.select,.textarea{width:100%;background:var(--input);border:1px solid var(--line);color:var(--text);border-radius:8px;outline:none}
+.select{height:40px;padding:8px}
+.textarea{min-height:320px;resize:vertical;padding:12px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:13px;line-height:1.4}
+.btn-row{display:flex;align-items:center;gap:12px;margin-top:12px}
+.btn-primary{background:var(--btn);border:none;color:#fff;padding:10px 14px;border-radius:8px;font-weight:600;cursor:pointer}
+.btn-primary:hover{background:var(--btn-hover)}
+.right-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.results{flex:1;overflow:auto;background:var(--input);border:1px solid var(--line);border-radius:8px;padding:12px;white-space:pre-wrap}
+.chip{border-radius:999px;padding:6px 10px;font-weight:700;color:#fff;background:#444}
+.chip.ok{background:var(--ok)}
+.chip.err{background:var(--err)}
+.chip.warn{background:var(--warn);color:#000}
+.chip.info{background:var(--info)}
+.spinner{width:16px;height:16px;border-radius:50%;border:2px solid #fff2;border-top-color:#fff;animation:spin 1s linear infinite}
+.hidden{display:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Responsive */
+@media (max-width: 1100px){
+  .panel{grid-template-columns:1fr}
+}
