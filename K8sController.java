@@ -5,6 +5,7 @@ import java.util.Map;
 
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -69,8 +70,24 @@ public class K8sController {
 
     @GetMapping("/pods")
     public ResponseEntity<?> listPods(@RequestParam(required = false, defaultValue = "default") String namespace) {
-        return ResponseEntity.ok(k8sService.listPods(namespace));
+        
+    	
+    	return ResponseEntity.ok(k8sService.listPods(namespace));
     }
+
+
+
+    @GetMapping("/services/zero")
+    public ResponseEntity<?> listServicesZero(@RequestParam(required = false, defaultValue = "default") String namespace) {
+        return ResponseEntity.ok(k8sService.listServicesWithZeroPods(namespace));
+    }
+    
+    @GetMapping("/services")
+    public ResponseEntity<?> listServices(
+        @RequestParam(required = false, defaultValue = "default") String namespace) {
+        return ResponseEntity.ok(k8sService.listServices(namespace));
+    }
+
 
     // ConfigMap endpoints (already expected by the UI)
     @GetMapping("/configmap/{name}/full")
@@ -169,128 +186,20 @@ public class K8sController {
         return ResponseEntity.status(405).body(Map.of("error","Use POST /api/pods/{ns}/{name}/restart"));
     }
     
-    @GetMapping(
-    		  value = "/api/namespaces/{namespace}/pods/{name}/logs",
-    		  produces = { MediaType.TEXT_PLAIN_VALUE, MediaType.TEXT_EVENT_STREAM_VALUE }
-    		)
-    		public ResponseEntity<?> getPodLogs(
-    		        @PathVariable String namespace,
-    		        @PathVariable String name,
-    		        @RequestParam(required = false) Integer lines,          // last N lines
-    		        @RequestParam(required = false) Integer sinceSeconds,   // last N seconds
-    		        @RequestParam(required = false) String container,       // container name
-    		        @RequestParam(required = false, defaultValue = "false") boolean previous,
-    		        @RequestParam(required = false, defaultValue = "false") boolean stream
-    		) {
-        try {
-            var client = k8sService.getClient();
-            var podRes = client.pods().inNamespace(namespace).withName(name);
+    
 
-            // Start as PrettyLoggable (non-generic in 7.x); both PodResource and inContainer(...) implement it.
-            PrettyLoggable op = (container != null && !container.isBlank())
-                    ? podRes.inContainer(container)
-                    : podRes;
+    @GetMapping(value = "/pods/{namespace}/{name}/logs", produces = "text/plain")
+    public ResponseEntity<String> getPodLogs(
+            @PathVariable String namespace,
+            @PathVariable String name,
+            @RequestParam(required = false) String container,
+            @RequestParam(required = false, defaultValue = "false") boolean previous,
+            @RequestParam(required = false) Integer tailLines,
+            @RequestParam(required = false) Integer sinceSeconds) {
 
-            // Add options by casting to the sibling capability interfaces.
-            if (lines != null && lines > 0) {
-                op = ((Tailable) op).tailingLines(lines);
-            }
-            if (sinceSeconds != null && sinceSeconds > 0) {
-                op = ((Timeable) op).sinceSeconds(sinceSeconds);
-            }
-            if (previous) {
-                op = ((Terminateable) op).terminated(); // previous container logs
-            }
-            // If you want timestamps and your version exposes it on Prettyable/withTimestamps():
-            // op = ((Prettyable) op).usingTimestamps(); // comment out if not present in 7.0.0
-
-            if (stream) {
-                SseEmitter emitter = new SseEmitter(0L);
-                var exec = Executors.newSingleThreadExecutor(r -> {
-                    var t = new Thread(r, "log-stream-" + namespace + "-" + name + (container != null ? "-" + container : ""));
-                    t.setDaemon(true); return t;
-                });
-                exec.submit(() -> streamWithWatchLog((Loggable) op, emitter, exec));
-                return ResponseEntity.ok().contentType(MediaType.TEXT_EVENT_STREAM).body(emitter);
-            } else {
-                String log = ((Loggable) op).getLog();
-                return ResponseEntity.ok(log == null ? "" : log);
-            }
-        } catch (Exception e) {
-            return ResponseEntity.status(404).body("ERROR: " + e.getMessage());
-        }
+        String logs = k8sService.getPodLogs(namespace, name);
+        		//, container, previous, tailLines, sinceSeconds);
+        return ResponseEntity.ok(logs == null ? "" : logs);
     }
-
-    private void streamWithWatchLog(
-            Loggable op, SseEmitter emitter, java.util.concurrent.ExecutorService exec) {
-        LogWatch watch = null;
-        try (EmitterLineOutput out = new EmitterLineOutput(emitter)) {
-            watch = (LogWatch) op.watchLog(out); // 7.x returns LogWatch
-            out.await();
-        } catch (Exception e) {
-            safeCompleteWithError(emitter, e);
-        } finally {
-            if (watch != null) try { watch.close(); } catch (Exception ignored) {}
-            try { emitter.complete(); } catch (Exception ignored) {}
-            exec.shutdownNow();
-        }
-    }
-
-    /** OutputStream -> SSE-per-line */
-    static class EmitterLineOutput extends OutputStream implements AutoCloseable {
-        private final SseEmitter emitter;
-        private final StringBuilder buf = new StringBuilder(4096);
-        private final Object lock = new Object();
-        private final CountDownLatch done = new CountDownLatch(1);
-        private volatile boolean closed = false;
-
-        EmitterLineOutput(SseEmitter emitter) { this.emitter = emitter; }
-
-        @Override public void write(int b) throws IOException { write(new byte[]{(byte) b}, 0, 1); }
-
-        @Override public void write(byte[] b, int off, int len) throws IOException {
-            if (closed) return;
-            String s = new String(b, off, len, StandardCharsets.UTF_8);
-            synchronized (lock) {
-                buf.append(s);
-                int idx;
-                while ((idx = indexOfNewline(buf)) >= 0) {
-                    String line = buf.substring(0, idx);
-                    buf.delete(0, idx + 1);
-                    emitter.send(SseEmitter.event().name("log").data(line));
-                }
-            }
-        }
-
-        private int indexOfNewline(StringBuilder sb) {
-            for (int i = 0; i < sb.length(); i++) {
-                char c = sb.charAt(i);
-                if (c == '\n') return (i > 0 && sb.charAt(i - 1) == '\r') ? i - 1 : i;
-            }
-            return -1;
-        }
-
-        void await() { try { done.await(); } catch (InterruptedException ignored) {} }
-
-        @Override public void close() {
-            if (!closed) {
-                closed = true;
-                try {
-                    synchronized (lock) {
-                        if (buf.length() > 0) {
-                            try { emitter.send(SseEmitter.event().name("log").data(buf.toString())); } catch (Exception ignored) {}
-                            buf.setLength(0);
-                        }
-                    }
-                } finally { done.countDown(); }
-            }
-        }
-    }
-
-    private static void safeCompleteWithError(SseEmitter emitter, Exception e) {
-        try { emitter.send(SseEmitter.event().name("error").data(e.getMessage())); } catch (Exception ignored) {}
-        try { emitter.completeWithError(e); } catch (Exception ignored) {}
-    }
-
 
 }
