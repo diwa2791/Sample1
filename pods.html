@@ -18,15 +18,39 @@
   <header class="topbar">
     <div class="brand">K8s Dashboard</div>
     <div class="controls">
-      <label for="namespaceSelect" style="color:#aab7c6;margin-right:6px;font-size:13px;">Namespace:</label>
-      <select id="namespaceSelect"></select>
+		<button id="switchEnvBtn" type="button" class="btn btn-primary">Switch Env/NS</button>
+		<span id="currentEnvNs" style="margin-left:8px; font-size:12px; color:#6b7280;"></span>
+
       <input id="search" type="text" placeholder="Search..." />
       <button id="refreshBtn">Refresh</button>
     </div>
   </header>
 
-  <!-- Main content -->
-  <main class="container" id="mainContent">
+  <!-- Env/NS Modal (uses shared modal styles) -->
+  <div id="envModal" class="modal-overlay hidden" aria-hidden="true">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Select Environment & Namespace</h3>
+        <button class="modal-close" id="envCloseBtn">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <label for="envSelect">Environment</label>
+          <select id="envSelect" class="inp" style="min-width:220px;"></select>
+        </div>
+        <div class="form-row" style="margin-top:10px;">
+          <label for="nsSelect">Namespace</label>
+          <select id="nsSelect" class="inp" style="min-width:220px;" disabled></select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="envCancelBtn" class="btn outline">Cancel</button>
+        <button id="envApplyBtn" class="btn" disabled>Apply</button>
+      </div>
+    </div>
+  </div>
+
+  <main class="container" id="mainContent" style="display:none; visibility:hidden;" style="visibility:hidden;">
     <!-- Summary -->
     <section class="summary">
       <div class="card card-filter" id="card-running" data-filter="Running">
@@ -104,6 +128,19 @@
       </div>
     </div>
   </div>
+  
+  <script id="env-data"
+          type="application/json"
+          th:utext="${envConfigJson}">
+  </script>
+  <script>
+    window.KDASH_ENV_MAP = {
+      dev: ["default","web","db"],
+      staging: ["default","payments","search"],
+      prod: ["core","billing","realtime"]
+    };
+	window.__detailLock = false;  
+  </script>
 
   <!-- ========== Script: load sidebar fragment, then run your existing page logic ========== -->
   <script>
@@ -130,6 +167,56 @@
         /* ignore */
       }
     })();
+	
+	
+	/* ---------- Card filter state ---------- */
+	let statusFilter = null; // one of: null | "Running" | "Pending" | "Abnormal" | "ServicesZero"
+
+	/* Map cards by id (adjust ids if your markup differs) */
+	const cardEls = {
+	  Running:      document.getElementById('card-running'),
+	  Pending:      document.getElementById('card-pending'),
+	  Abnormal:     document.getElementById('card-abnormal'),
+	  ServicesZero: document.getElementById('card-services-zero')
+	};
+
+	/* Highlight the active card (and set ARIA for accessibility) */
+	function updateCardActiveState() {
+	  Object.entries(cardEls).forEach(([key, el]) => {
+	    if (!el) return;
+	    const active = (statusFilter === key);
+	    el.classList.toggle('active', active);
+	    el.setAttribute('aria-pressed', active ? 'true' : 'false');
+	  });
+	}
+
+	/* Apply or clear a filter, then re-render from cached data */
+	function applyFilter(next) {
+	  // Non-toggle: always set the clicked card's filter and render
+	  statusFilter = next;
+	  updateCardActiveState();
+	  if (Array.isArray(window.__lastPods)) {
+	    renderPods(window.__lastPods, window.__lastSummary || {});
+	  } else if (typeof fetchSummaryAndRender === 'function') {
+	    fetchSummaryAndRender();
+	  }
+	}
+
+
+	/* Wire single click handler per card — uses data-filter, not innerText */
+	function wireCardClicks() {
+	  document.querySelectorAll('.card.card-filter').forEach(el => {
+	    const filter = el.dataset.filter; // MUST be exactly Running | Pending | Abnormal | ServicesZero
+	    el.addEventListener('click', () => applyFilter(filter), { passive: true });
+	  });
+	}
+
+	/* Call this once after DOMContentLoaded */
+	wireCardClicks();
+	updateCardActiveState();
+	
+	
+	
 	/* ---------------- Globals & DOM refs ---------------- */
 	const podsBody = document.getElementById('podsBody');
 	const searchInput = document.getElementById('search');
@@ -137,16 +224,9 @@
 	const namespaceSelect = document.getElementById('namespaceSelect');
 
 	let currentNamespace = 'all';
-	let statusFilter = null; // Running | Pending | Abnormal | ServicesZero
+	 // Running | Pending | Abnormal | ServicesZero
 
-	// Summary card elements
-	const cardEls = {
-	  running: document.getElementById('card-running'),
-	  pending: document.getElementById('card-pending'),
-	  abnormal: document.getElementById('card-abnormal'),
-	  servicesZero: document.getElementById('card-services-zero')
-	};
-
+	
 	// Modal shared elements (already exist in your page)
 	const modalOverlay = document.getElementById('modalOverlay');
 	const modalTitle = document.getElementById('modalTitle');
@@ -198,7 +278,21 @@
 	}
 
 	// Lowercase phase for filtering/sorting
-	function normalizePodStatus(pod) {
+	
+function isAbnormal(p) {
+  try {
+    const s = (p.status || '').toLowerCase();
+    const norm = (typeof normalizePodStatus === 'function' ? (normalizePodStatus(p) || '') : '').toLowerCase();
+    if (s === 'failed' || s === 'unknown') return true;
+    if (norm.includes('crash')) return true;      // CrashLoopBackOff
+    if (norm.includes('backoff')) return true;    // ImagePullBackOff, BackOff
+    if (norm.includes('error')) return true;      // ErrImagePull
+    if (norm.includes('oom')) return true;        // OOMKilled
+    if (p.restartCount && p.restartCount > 0) return true;
+    return false;
+  } catch(e) { return false; }
+}
+function normalizePodStatus(pod) {
 	  return podPhase(pod).toLowerCase();
 	}
 
@@ -241,20 +335,6 @@
 	   return lastNonOk || { res: null, url: null };
 	 }
 
-
-
-	/* ---------------- Summary card filter wiring ---------------- */
-	Object.values(cardEls).forEach(el => {
-	  el.addEventListener('click', () => {
-	    const f = el.dataset.filter;
-	    statusFilter = (statusFilter === f) ? null : f;
-	    updateCardActiveState();
-	    fetchSummaryAndRender();
-	  });
-	});
-	function updateCardActiveState() {
-	  Object.values(cardEls).forEach(el => el.classList.toggle('active', statusFilter === el.dataset.filter));
-	}
 
 	/* ---------------- Pod table rendering ---------------- */
 	// Replace/insert this function in your script
@@ -368,7 +448,7 @@
 	      const svcCandidates = [
 	        `/api/v1/namespaces/${encodeURIComponent(namespace)}/services/${encodeURIComponent(serviceName)}`,
 	        `/api/services/${encodeURIComponent(namespace)}/${encodeURIComponent(serviceName)}`,
-	        `/api/services?namespace=${encodeURIComponent(namespace)}` // fallback to list if no single-get
+	        `/api/services/zero?namespace=${encodeURIComponent(namespace)}` // fallback to list if no single-get
 	      ];
 	      const podsCandidates = [
 	        `/api/pods?namespace=${encodeURIComponent(namespace)}`,
@@ -378,7 +458,7 @@
 	      // Try to fetch the service object first
 	      let svcRes = await fetchWithFallback([
 	        `/api/v1/namespaces/${encodeURIComponent(namespace)}/services/${encodeURIComponent(serviceName)}`,
-	        `/api/services/${encodeURIComponent(namespace)}/${encodeURIComponent(serviceName)}`,
+	        `/api/services/zero/${encodeURIComponent(namespace)}/${encodeURIComponent(serviceName)}`,
 	        `/api/services?namespace=${encodeURIComponent(namespace)}`
 	      ]);
 
@@ -486,7 +566,7 @@
 	  // Describe (try service describe endpoint; fallback to alert)
 	  actionsTd.appendChild(makeBtn('Describe', 'btn outline small', async () => {
 	    try {
-	      const r = await fetch(`/api/deployments/${encodeURIComponent(ns)}/${encodeURIComponent(name)}`); // maybe service name maps to deployment
+	      const r = await fetch(`/api/deployments/${encodeURIComponent(getNs())}/${encodeURIComponent(name)}`); // maybe service name maps to deployment
 	      if (r.ok) { alert(JSON.stringify(await r.json(), null, 2)); return; }
 	    } catch (e) { /* ignore */ }
 	    alert('Describe: ' + name);
@@ -520,131 +600,126 @@
 
 
 	/* ---------------- Fetch pods + summary and render ---------------- */
-	async function fetchSummaryAndRender() {
-	  try {
+	function getNs(){ return (window.currentNamespace || localStorage.getItem('kdash.selected.ns') || 'default'); }
+
+	function renderPods(pods, summary) {
+	  const podsBody = document.getElementById('podsBody');
+	  const searchInput = document.getElementById('search');
+	  if (!podsBody) return;
+
+	  if (typeof podsBody !== 'undefined' && podsBody && !window.__detailLock) podsBody.innerHTML = '';
+
+	  const search = (searchInput?.value || '').toLowerCase();
+
+	  const filtered = pods.filter(p => {
+	    if (statusFilter) {
+	      if (statusFilter === 'Running' && p.status !== 'Running') return false;
+	      if (statusFilter === 'Pending' && p.status !== 'Pending') return false;
+	      if (statusFilter === 'Abnormal' && !isAbnormal(p)) return false;
+	    }
+	    if (search && !(p.name || '').toLowerCase().includes(search)) return false;
+	    return true;
+	  });
+
+	  filtered.forEach(p => podsBody.appendChild(createPodRow(p))); // ✅ GOOD
+	}
+
+
+async function fetchSummaryAndRender() {
+	if (window.__detailLock) return;  
+	    try { if (!window.currentNamespace) return; } catch(e){}
+try {
 	    const ns = currentNamespace;
 	    const [podsRes, summaryRes] = await Promise.all([
-	      fetch('/api/pods?namespace=' + encodeURIComponent(ns)),
-	      fetch('/api/summary?namespace=' + encodeURIComponent(ns))
+	      fetch('/api/pods?namespace=' + encodeURIComponent(getNs()) + '&t=' + Date.now()),
+	      fetch('/api/summary?namespace=' + encodeURIComponent(getNs()) + '&t=' + Date.now())
 	    ]);
 	    if (!podsRes.ok || !summaryRes.ok) {
 	      console.error('fetch error', podsRes.status, summaryRes.status);
 	      return;
 	    }
 	    const pods = await podsRes.json();
-	    const summary = await summaryRes.json();
+        const summary = await summaryRes.json();
+        window.__lastPods = pods; window.__lastSummary = summary;
 
-	    // Update counts
+        // Update counts
 	    document.getElementById('count-running').textContent = summary.running ?? 0;
 	    document.getElementById('count-pending').textContent = summary.pending ?? 0;
-	    document.getElementById('count-abnormal').textContent = summary.abnormal ?? 0;
+	    const abnormalCount = pods.reduce((acc, pod) => acc + (isAbnormal(pod) ? 1 : 0), 0);
+    document.getElementById('count-abnormal').textContent = abnormalCount;
 	    document.getElementById('count-services-zero').textContent = summary.servicesWithZeroPods ?? 0;
 
 	    // Render filtered pods
 	    const search = (searchInput?.value || '').toLowerCase();
-	    podsBody.innerHTML = '';
+	    if (typeof podsBody !== 'undefined' && podsBody && !window.__detailLock) podsBody.innerHTML = '';
 
-	    const filtered = pods.filter(p => {
-	      // status filter
-	      if (statusFilter) {
-	        if (statusFilter === 'Running' && p.status !== 'Running') return false;
-	        if (statusFilter === 'Pending' && p.status !== 'Pending') return false;
-	        if (statusFilter === 'Abnormal') {
-	          if (!(p.status === 'Failed' || (p.status && normalizePodStatus(p).includes('crash')) || (p.restartCount && p.restartCount > 0))) return false;
-	        }
-	        if (statusFilter === 'ServicesZero') return false; // special handled below
-	      }
-	      // search by name
-	      if (search && !(p.name || '').toLowerCase().includes(search)) return false;
-	      return true;
-	    });
+	    window.__lastPods = pods; window.__lastSummary = summary;
 
-	    filtered.forEach(p => podsBody.appendChild(createPodRow(p)));
+    
+		renderPods(pods, summary);
 
 	    // ServicesZero card: show message
 		// ServicesZero card: show message or list services with zero pods
-		if (statusFilter === 'ServicesZero') {
-		  // Try to fetch services and pods, compute which services have zero matching pods
-		  podsBody.innerHTML = '<tr><td colspan="4">Loading services with zero pods…</td></tr>';
-		  try {
-		    const ns = currentNamespace;
-		    // Try the canonical and proxy endpoints for services (fallback tolerant)
-		    const svcCandidates = [
-		      `/api/services?namespace=${encodeURIComponent(ns)}`,
-		      `/api/v1/namespaces/${encodeURIComponent(ns)}/services`,
-		      `/apis/v1/namespaces/${encodeURIComponent(ns)}/services`,
-		      `/services?namespace=${encodeURIComponent(ns)}`
-		    ];
-		    const podsCandidates = [
-		      `/api/pods?namespace=${encodeURIComponent(ns)}`,
-		      `/api/v1/namespaces/${encodeURIComponent(ns)}/pods`,
-		      `/apis/v1/namespaces/${encodeURIComponent(ns)}/pods`
-		    ];
+		
+if (statusFilter === 'ServicesZero') {
+  podsBody.innerHTML = '<tr><td colspan="4">Scanning services with zero pods…</td></tr>';
+  try {
+    const ns = (namespaceSelect?.value && namespaceSelect.value !== 'all')
+      ? namespaceSelect.value
+      : (currentNamespace && currentNamespace !== 'all' ? currentNamespace : null);
+    if (!ns) {
+      podsBody.innerHTML = '<tr><td colspan="4">Select a specific namespace to see services with 0 pods.</td></tr>';
+      return; // do not call backend with namespace=all
+    }
+const [svcRes, podsRes] = await Promise.all([
+      fetch('/api/services/zero?namespace=' + encodeURIComponent(ns) + '&t=' + Date.now()),
+      fetch('/api/pods?namespace=' + encodeURIComponent(ns) + '&t=' + Date.now())
+    ]);
+    if (!svcRes.ok || !podsRes.ok) {
+      podsBody.innerHTML = '<tr><td colspan="4">Failed to load services/pods (HTTP ' + svcRes.status + '/' + podsRes.status + ')</td></tr>';
+      return;
+    }
 
-		    const svcRes = await fetchWithFallback(svcCandidates);
-		    const podsRes = await fetchWithFallback(podsCandidates);
+    const servicesPayload = await svcRes.json().catch(()=>null);
+    const podsPayload = await podsRes.json().catch(()=>null);
 
-		    if (!svcRes.res || !svcRes.res.ok) {
-		      console.warn('ServicesZero: services listing not available, tried:', svcCandidates);
-		      podsBody.innerHTML = '<tr><td colspan="4">Services list not available from backend (tried multiple endpoints).</td></tr>';
-		      return;
-		    }
-		    if (!podsRes.res || !podsRes.res.ok) {
-		      console.warn('ServicesZero: pods listing not available, tried:', podsCandidates);
-		      podsBody.innerHTML = '<tr><td colspan="4">Pods list not available from backend (tried multiple endpoints).</td></tr>';
-		      return;
-		    }
+    const services = Array.isArray(servicesPayload) ? servicesPayload
+                    : (servicesPayload && Array.isArray(servicesPayload.items) ? servicesPayload.items : []);
+    const pods = Array.isArray(podsPayload) ? podsPayload
+                : (podsPayload && Array.isArray(podsPayload.items) ? podsPayload.items : []);
 
-		    const servicesPayload = await svcRes.res.json().catch(()=>null);
-		    const podsPayload = await podsRes.res.json().catch(()=>null);
+    const podLabelsList = pods.map(p => (p?.metadata?.labels) || {});
 
-		    // Normalize shapes: kube returns { items: [...] } often
-		    const servicesList = Array.isArray(servicesPayload) ? servicesPayload
-		                          : (servicesPayload && Array.isArray(servicesPayload.items) ? servicesPayload.items : []);
-		    const podsList = Array.isArray(podsPayload) ? podsPayload
-		                      : (podsPayload && Array.isArray(podsPayload.items) ? podsPayload.items : []);
+    const selectorMatchesAnyPod = (selector) => {
+      if (!selector || Object.keys(selector).length === 0) return false;
+      return podLabelsList.some(lbls => {
+        for (const [k,v] of Object.entries(selector)) {
+          if (lbls[k] !== v) return false;
+        }
+        return true;
+      });
+    };
 
-		    // If no services, show a friendly message
-		    if (!servicesList || servicesList.length === 0) {
-		      podsBody.innerHTML = '<tr><td colspan="4">No services found in this namespace.</td></tr>';
-		      return;
-		    }
+    const zeroServices = [];
+    for (const svc of services) {
+      const selector = svc?.spec?.selector || null;
+      const any = selectorMatchesAnyPod(selector);
+      if (!any) zeroServices.push(svc);
+    }
 
-		    // Build an index of pods by labels for quick matching
-		    const podLabelSet = podsList.map(p => ({ name: p.metadata?.name, labels: p.metadata?.labels || {} }));
-
-		    // Helper to test if a service selector matches any pod labels
-		    function serviceHasMatchingPod(selector) {
-		      if (!selector || Object.keys(selector).length === 0) return false;
-		      return podLabelSet.some(p => {
-		        const labels = p.labels || {};
-		        return Object.entries(selector).every(([k,v]) => labels[k] === v);
-		      });
-		    }
-
-		    // Compute services that have zero pods
-		    const zeroServices = servicesList.filter(s => {
-		      const selector = s.spec?.selector || {};
-		      return !serviceHasMatchingPod(selector);
-		    });
-
-		    if (!zeroServices || zeroServices.length === 0) {
-		      podsBody.innerHTML = '<tr><td colspan="4">No services with zero pods were found.</td></tr>';
-		      return;
-		    }
-
-		    // Render the zeroServices list with the same table structure
-		    podsBody.innerHTML = '';
-		    zeroServices.forEach(svc => podsBody.appendChild(createServiceRow(svc)));
-		  } catch (err) {
-		    console.error('ServicesZero render failed', err);
-		    podsBody.innerHTML = '<tr><td colspan="4">Error computing services with zero pods.</td></tr>';
-		  }
-
-		  return; // done handling ServicesZero
-		}
-
-	  } catch (err) {
+    if (typeof podsBody !== 'undefined' && podsBody && !window.__detailLock) podsBody.innerHTML = '';
+    if (zeroServices.length === 0) {
+      podsBody.innerHTML = '<tr><td colspan="4">No services with zero matching pods 🎉</td></tr>';
+    } else {
+      zeroServices.forEach(svc => podsBody.appendChild(createServiceRow(svc)));
+    }
+  } catch (e) {
+    console.error('ServicesZero (Option 2) failed', e);
+    podsBody.innerHTML = '<tr><td colspan="4">Error scanning services with zero pods</td></tr>';
+  }
+  return; // do not continue normal pod rendering
+}
+} catch (err) {
 	    console.error('refresh error', err);
 	  }
 	}
@@ -654,7 +729,7 @@
 	  if (!confirm(`Delete pod ${podName} to force restart?`)) return;
 
 	  try {
-	    const url = `/api/pods/${encodeURIComponent(namespace)}/${encodeURIComponent(podName)}/restart`;
+	    const url = `/api/pods/${encodeURIComponent(getNs())}/${encodeURIComponent(podName)}/restart`;
 	    const res = await fetch(url, { method: 'POST' });
 
 	    if (!res.ok) {
@@ -781,7 +856,7 @@
 	  openModal(`Edit ConfigMap — ${name}`, 'configmap-full', namespace, name, null);
 	  modalBody.innerHTML = '<p style="color:var(--muted)">Loading ConfigMap...</p>';
 
-	  const url = `/api/configmap/${encodeURIComponent(name)}/full?namespace=${encodeURIComponent(namespace)}`;
+	  const url = `/api/configmap/${encodeURIComponent(name)}/full?namespace=${encodeURIComponent(getNs())}`;
 	  const res = await fetch(url);
 	  if (!res.ok) {
 	    const txt = await res.text().catch(()=>res.statusText);
@@ -792,7 +867,7 @@
 	  if (!payload) { modalBody.innerHTML = `<p style="color:var(--danger)">Malformed ConfigMap</p>`; return; }
 
 	  cmRaw.name = name;
-	  cmRaw.ns = namespace;
+	  cmRaw.ns = getNs();
 	  cmRaw.rv = payload.metadata?.resourceVersion || '';
 	  cmRaw.originalData = payload.data || {};
 
@@ -909,7 +984,7 @@
 	  // 1) Fetch pod to discover containers
 	  let pod;
 	  try {
-	    const res = await fetch(`/api/pods?namespace=${encodeURIComponent(namespace)}`);
+	    const res = await fetch(`/api/pods?namespace=${encodeURIComponent(getNs())}`);
 	    const list = await res.json();
 	    pod = Array.isArray(list) ? list.find(p => p?.metadata?.name === podName) : null;
 	  } catch {}
@@ -958,7 +1033,7 @@
 	        container: $container.value || undefined,
 	        previous: $previous.checked || undefined
 	      };
-	      const url = `/api/pods/${encodeURIComponent(namespace)}/${encodeURIComponent(podName)}/logs` + qp(params);
+	      const url = `/api/pods/${encodeURIComponent(getNs())}/${encodeURIComponent(podName)}/logs` + qp(params);
 	      const res = await fetch(url, { headers: { 'Accept': 'text/plain' } });
 	      const txt = await res.text();
 	      if (!res.ok) {
@@ -1067,7 +1142,7 @@
 
 	  // sensible candidate list; avoid list-style /api/deployments/... shapes that produce 404 static resource errors
 	  const candidates = [
-	      `/api/deployments/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`
+	      `/api/deployments/${encodeURIComponent(getNs())}/${encodeURIComponent(name)}`
 	    ];
 
 	  const result = await fetchWithFallback(candidates);
@@ -1126,7 +1201,7 @@
 	  parsed.metadata.namespace = parsed.metadata.namespace || modalContext.namespace;
 
 	  const body = JSON.stringify(parsed, null, 2);
-	  const url = `/api/deployments/${encodeURIComponent(modalContext.namespace)}/${encodeURIComponent(modalContext.targetName)}`;
+	  const url = `/api/deployments/${encodeURIComponent(getNs())}/${encodeURIComponent(modalContext.targetName)}`;
 
 	  modalSaveBtn.disabled = true;
 	  modalSaveBtn.textContent = 'Saving...';
@@ -1168,7 +1243,7 @@
 	  modalSaveBtn.textContent = 'Scaling...';
 
 	  try {
-	    const encNS = encodeURIComponent(currentNamespace);
+	    const encNS = encodeURIComponent(getNs());
 	    const encDeploy = encodeURIComponent(deploy);
 	    const url = `/api/deployments/${encNS}/${encDeploy}/scale`;
 
@@ -1241,23 +1316,239 @@
 	if (searchInput) searchInput.addEventListener('input', () => { clearTimeout(window.__pod_search_timer); window.__pod_search_timer = setTimeout(fetchSummaryAndRender, 180); });
 	if (namespaceSelect) namespaceSelect.addEventListener('change', () => { currentNamespace = namespaceSelect.value; fetchSummaryAndRender(); });
 
-	(async function init() {
-	  await loadNamespaces();
-	  updateCardActiveState();
-	  await fetchSummaryAndRender();
-	  setInterval(fetchSummaryAndRender, 5000);
-	})();
+	// Defer startup until env/ns chosen
+    async function startApp() {
+      try {
+        updateCardActiveState();
+        await fetchSummaryAndRender();
+        //if (!window.__pods_poll) window.__pods_poll = setInterval(fetchSummaryAndRender, 5000);
+        const main = document.getElementById('mainContent');
+        if (main) main.style.visibility = 'visible';
+      } catch(e) {
+        console.warn('startApp failed', e);
+      }
+    }
 	
-	function baseServiceNameFromPod(podName) {
-	  if (!podName) return podName;
-	  const parts = podName.split("-");
-	  if (parts.length > 2) {
-	    return parts.slice(0, -2).join("-");
-	  }
-	  return podName;
-	}
+	
+	  // Injected from server (no API call)
+	  const ENV_MAP = /*[[${envConfigJson}]]*/ '{}';
 
-	</script>
+	    let ENV_DATA = {};
+        (function loadEnvData(){
+          try {
+            if (window.KDASH_ENV_MAP && typeof window.KDASH_ENV_MAP === 'object') {
+              ENV_DATA = window.KDASH_ENV_MAP;
+              return;
+            }
+          } catch (e) {}
+          try {
+            const raw = document.getElementById('env-data')?.textContent?.trim();
+            if (raw && raw !== '[[${envConfigJson}]]') {
+              ENV_DATA = JSON.parse(raw);
+            }
+          } catch (e) {
+            console.warn('ENV_DATA parse failed', e);
+            ENV_DATA = {};
+          }
+        })();
+
+	    const els = {
+	      modal: document.getElementById('envModal'),
+	      env: document.getElementById('envSelect'),
+	      ns: document.getElementById('nsSelect'),
+	      apply: document.getElementById('envApplyBtn'),
+	      cancel: document.getElementById('envCancelBtn'),
+	      switchBtn: document.getElementById('switchEnvBtn'),
+	    };
+
+	    // --- Renamed to avoid clashing with the app modal ---
+		let _lastFocus = null;
+
+		function openEnvModal() {
+		  const overlay = document.getElementById('envModal');
+		  _lastFocus = document.activeElement;
+		  overlay.classList.remove('hidden'); overlay.removeAttribute('inert');
+		  overlay.setAttribute('aria-hidden', 'false');
+		  setTimeout(() => document.getElementById('envSelect')?.focus(), 0);
+		}
+
+		function closeEnvModal() {
+		  const overlay = document.getElementById('envModal');
+		  overlay.classList.add('hidden'); overlay.setAttribute('inert','');
+		  overlay.setAttribute('aria-hidden', 'true');
+		  _lastFocus?.focus();
+		}
+
+
+
+	    function populateEnvs(selected) {
+	      els.env.innerHTML = '<option value="" disabled selected>Select environment…</option>';
+	      Object.keys(ENV_DATA).forEach(env => {
+	        const opt = document.createElement('option');
+	        opt.value = env; opt.textContent = env;
+	        if (selected && selected === env) opt.selected = true;
+	        els.env.appendChild(opt);
+	      });
+	    }
+
+	    function populateNamespaces(env, selectedNs) {
+	      const list = ENV_DATA[env] || [];
+	      els.ns.innerHTML = '';
+	      if (!env || list.length === 0) {
+	        els.ns.disabled = true;
+	        els.apply.disabled = true;
+	        return;
+	      }
+	      list.forEach(ns => {
+	        const opt = document.createElement('option');
+	        opt.value = ns; opt.textContent = ns;
+	        if (selectedNs && selectedNs === ns) opt.selected = true;
+	        els.ns.appendChild(opt);
+	      });
+	      els.ns.disabled = false;
+	      els.apply.disabled = !els.ns.value;
+	    }
+
+	    const KEY_ENV = 'kdash.selected.env';
+	    const KEY_NS  = 'kdash.selected.ns';
+	    const loadSaved = () => ({ env: localStorage.getItem(KEY_ENV) || '', ns: localStorage.getItem(KEY_NS) || '' });
+	    const save = (env, ns) => (localStorage.setItem(KEY_ENV, env), localStorage.setItem(KEY_NS, ns));
+
+	    function applySelection() {
+	      const env = els.env.value;
+	      const ns  = els.ns.value;
+	      if (!env || !ns) return;
+
+	      save(env, ns);
+	      closeEnvModal();
+
+	      // Start in-page without reload
+          const badge = document.querySelector('#currentEnvNs');
+          if (badge) badge.textContent = `${env} / ${ns}`;
+          window.currentNamespace = ns;
+          const main = document.getElementById('mainContent');
+          if (main) { main.style.display = ''; main.style.visibility = 'visible'; }
+          window.__envReady = true;
+          if (typeof fetchSummaryAndRender === 'function') fetchSummaryAndRender();
+          if (typeof startApp === 'function') startApp();
+	    }
+
+	    // Button to open the modal
+	    els.switchBtn?.addEventListener('click', () => {
+	      const saved = loadSaved();
+	      populateEnvs(saved.env || '');
+	      populateNamespaces(saved.env || '', saved.ns || '');
+	      openEnvModal();
+	    });
+
+	    els.env.addEventListener('change', () => populateNamespaces(els.env.value, ''));
+	    els.ns.addEventListener('change', () => { els.apply.disabled = !(els.env.value && els.ns.value); });
+	    els.apply.addEventListener('click', applySelection);
+	    els.cancel.addEventListener('click', closeEnvModal);
+
+	    // First load: if nothing saved, show startup modal
+	    document.addEventListener('DOMContentLoaded', () => {
+      const saved = loadSaved();
+			  const badge = document.querySelector('#currentEnvNs');
+
+			  // Preselect if saved, but DO NOT start the app yet.
+			  if (saved.env && saved.ns) {
+			    badge && (badge.textContent = `${saved.env} / ${saved.ns}`);
+			  }
+
+			  // Populate & open modal once (no duplicates)
+			  populateEnvs(saved.env || '');
+			  populateNamespaces(saved.env || '', saved.ns || '');
+			  openEnvModal();
+
+			  // Keep content hidden and do not fetch anything yet.
+			  const main = document.getElementById('mainContent');
+			  if (main) { main.style.display = 'none'; main.style.visibility = 'hidden'; }
+
+			  // Optional: allow URL override to prefill the modal only
+			  const params = new URLSearchParams(window.location.search);
+			  const urlEnv = params.get('env');
+			  const urlNs  = params.get('namespace');
+			  if (urlEnv && urlNs) {
+			    save(urlEnv, urlNs);
+			    badge && (badge.textContent = `${urlEnv} / ${urlNs}`);
+			  }
+			});
+	
+</script>
+
+<script src="/js/kdash_on_demand_patch.js"></script>
+<script>
+(function () {
+  const nsSel = document.getElementById('namespaceSelect');
+  const ids = {
+    running:  '#count-running',
+    pending:  '#count-pending',
+    abnormal: '#count-abnormal',
+    services: '#count-services-zero'
+  };
+
+  const setText = (sel, n) => {
+    const el = document.querySelector(sel);
+    if (el) el.textContent = String(n);
+  };
+  const normPhase = (p) => ((p?.status?.phase || p?.status || '') + '').toLowerCase();
+  const isAbnormal = (p) => (p?.status?.containerStatuses || []).some(c => {
+    const w = (c?.state?.waiting?.reason || '').toLowerCase();
+    const t = (c?.state?.terminated?.reason || '').toLowerCase();
+    return w.includes('crashloop') || w.includes('error') || t.includes('error') || t.includes('crash');
+  });
+
+
+  async function refreshCardCounts() {
+    const ns = getNs();
+    const t = Date.now();
+    try {
+      const [podsRes, svcRes] = await Promise.all([
+        fetch(`/api/pods?namespace=${encodeURIComponent(ns)}&t=${t}`, { cache: 'no-store' }),
+        // prefer your backend endpoint; if you don't expose it, it will 404 and we treat as 0
+        fetch(`/api/services/zero?namespace=${encodeURIComponent(ns)}&t=${t}`, { cache: 'no-store' }).catch(() => null)
+      ]);
+
+      // Pods → compute running/pending/abnormal counts
+      const podsPayload = podsRes.ok ? await podsRes.json() : [];
+      const pods = Array.isArray(podsPayload) ? podsPayload
+                 : (podsPayload && Array.isArray(podsPayload.items) ? podsPayload.items : []);
+
+      setText(ids.running,  pods.filter(p => normPhase(p).includes('running')).length);
+      setText(ids.pending,  pods.filter(p => {
+        const s = normPhase(p);
+        return s.includes('pending') || s.includes('containercreating');
+      }).length);
+      setText(ids.abnormal, pods.filter(isAbnormal).length);
+
+      // Services (0 pods) → use endpoint if present, else show 0 (still clickable to compute list on demand)
+      let zeroCount = 0;
+      if (svcRes && svcRes.ok) {
+        const svcPayload = await svcRes.json();
+        const arr = Array.isArray(svcPayload) ? svcPayload : (svcPayload?.items || []);
+        zeroCount = arr.length;
+      }
+      setText(ids.services, zeroCount);
+
+    } catch (e) {
+      console.error('refreshCardCounts error', e);
+      // don’t throw; just keep previous numbers
+    }
+  }
+
+  // Expose in case you want to call it manually
+  window.refreshCardCounts = refreshCardCounts;
+
+  // Kick once and set a **summary-only** poller (does not touch podsBody nor detail rows)
+  try { if (window.__summary_poll) clearInterval(window.__summary_poll); } catch {}
+  refreshCardCounts();
+  window.__summary_poll = setInterval(refreshCardCounts, 10000); // 10s; tune as you like
+
+  // Also refresh counts when namespace changes
+  if (nsSel) nsSel.addEventListener('change', refreshCardCounts);
+})();
+</script>
 
 
   </div>
