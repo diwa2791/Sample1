@@ -1,0 +1,39 @@
+\set tableA 'schema.tableA'
+\set tableB 'schema.tableB'
+\set cols  'col1, col2, col3, col4'
+
+WITH a AS (
+    SELECT 
+        MD5(CONCAT_WS('|', :cols)) AS h,
+        *
+    FROM :tableA
+),
+b AS (
+    SELECT 
+        MD5(CONCAT_WS('|', :cols)) AS h,
+        *
+    FROM :tableB
+),
+missing_in_b AS (
+    SELECT 'MISSING_IN_B' AS type, a.*
+    FROM a
+    LEFT JOIN b ON a.h = b.h
+    WHERE b.h IS NULL
+),
+extra_in_b AS (
+    SELECT 'EXTRA_IN_B' AS type, b.*
+    FROM b
+    LEFT JOIN a ON a.h = b.h
+    WHERE a.h IS NULL
+),
+changed AS (
+    SELECT 'CHANGED' AS type, a.*, b.*
+    FROM a
+    JOIN b ON a.h = b.h
+    WHERE (a.*) IS DISTINCT FROM (b.*)
+)
+SELECT * FROM missing_in_b
+UNION ALL
+SELECT * FROM extra_in_b
+UNION ALL
+SELECT * FROM changed;
