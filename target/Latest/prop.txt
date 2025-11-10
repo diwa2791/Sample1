@@ -1,0 +1,17 @@
+azure:
+  org: your-org
+  project: your-project
+  repo: your-repo
+  pat: ${AZURE_PAT}   # set as env var; don’t hardcode
+
+db:
+  sit:
+    url: jdbc:postgresql://sit-db-host:5432/app
+    user: appuser
+    pass: secret
+  qa:
+    url: jdbc:postgresql://qa-db-host:5432/app
+    user: appuser
+    pass: secret
+repo:
+  prodFolder: /sql/prod

@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Script Control</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <style>
+    :root { --muted:#7a8a99; --line:#e8edf2; --danger:#d33; --ok:#2a7; }
+    body{font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#fafbfc;color:#0f172a}
+    .wrap{max-width:1100px;margin:28px auto;padding:0 16px}
+    h1{font-size:21px;margin:0 0 16px}
+    .card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px}
+    .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+    .inp{height:36px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:#fff}
+    .btn{height:36px;padding:0 12px;border:1px solid rgba(0,0,0,.08);border-radius:8px;background:#111;color:#fff;cursor:pointer}
+    .btn.outline{background:#fff;color:#111}
+    .btn.small{height:30px}
+    .list{margin-top:12px;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+    .list table{width:100%;border-collapse:collapse}
+    .list th,.list td{padding:10px 12px;border-top:1px solid var(--line);vertical-align:top}
+    .list th{background:#f7fafc;text-align:left;font-weight:600}
+    .muted{color:var(--muted)}
+    .ok{color:var(--ok)}
+    .err{color:var(--danger)}
+    .code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;background:#0d1117;color:#e6eef6;border-radius:8px;border:1px solid rgba(255,255,255,.06);padding:12px;white-space:pre;overflow:auto;max-height:360px}
+    .toolbar{display:flex;gap:8px;align-items:center}
+    .right{margin-left:auto}
+    .tt{position:relative}
+    .tt::after{content:attr(data-tt);position:absolute;left:50%;transform:translateX(-50%) translateY(-6px);bottom:100%;
+      max-width:280px;padding:6px 8px;border-radius:6px;font-size:12px;line-height:1.2;color:#fff;background:#111;
+      box-shadow:0 6px 18px rgba(0,0,0,.2);opacity:0;pointer-events:none;white-space:nowrap;z-index:10;transition:.14s}
+    .tt:hover::after{opacity:.98;transform:translateX(-50%) translateY(-10px)}
+    .icon-btn{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border:1px solid rgba(0,0,0,.1);border-radius:7px;background:#fff;cursor:pointer}
+    .radio{display:flex;gap:12px;align-items:center}
+    .pill{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:999px;border:1px solid var(--line);background:#fff}
+    .tag{font-size:11px;color:var(--muted);border:1px solid var(--line);padding:2px 6px;border-radius:999px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Script Control</h1>
+
+    <div class="card">
+      <div class="row">
+        <input id="commitInput" class="inp" placeholder="Paste commit ID (Azure DevOps)" style="min-width:320px;width:50%">
+        <button id="loadBtn" class="btn" data-tt="Fetch files for this commit">Load</button>
+        <div class="right muted">Tip: dev shares commit ID; approver pastes it here.</div>
+      </div>
+
+      <div id="meta" class="muted" style="margin-top:8px"></div>
+
+      <div id="filesPane" class="list" style="display:none;margin-top:12px">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:38%">File (Country)</th>
+              <th style="width:12%">Size</th>
+              <th style="width:18%">Folder</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="filesBody"></tbody>
+        </table>
+      </div>
+
+      <div id="viewer" style="display:none;margin-top:14px">
+        <div class="toolbar">
+          <div class="pill"><span class="muted">Viewing:</span> <strong id="viewPath"></strong></div>
+          <span class="tag" id="viewCountry"></span>
+          <div class="right radio">
+            <label class="pill"><input type="checkbox" id="dbSIT"> SIT</label>
+            <label class="pill"><input type="checkbox" id="dbQA"> QA</label>
+            <button id="runBtn" class="btn" data-tt="Run in selected DB(s)">Run</button>
+            <button id="promoteBtn" class="btn outline" data-tt="Move this file to prod folder">Promote to Prod</button>
+          </div>
+        </div>
+        <pre id="code" class="code"></pre>
+        <div id="runStatus" style="margin-top:8px"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const commitInput = document.getElementById('commitInput');
+  const loadBtn = document.getElementById('loadBtn');
+  const filesPane = document.getElementById('filesPane');
+  const filesBody = document.getElementById('filesBody');
+  const viewer = document.getElementById('viewer');
+  const viewPath = document.getElementById('viewPath');
+  const viewCountry = document.getElementById('viewCountry');
+  const code = document.getElementById('code');
+  const dbSIT = document.getElementById('dbSIT');
+  const dbQA  = document.getElementById('dbQA');
+  const runBtn = document.getElementById('runBtn');
+  const promoteBtn = document.getElementById('promoteBtn');
+  const meta = document.getElementById('meta');
+  const runStatus = document.getElementById('runStatus');
+
+  const state = { commitId: '', current: null, files: [] };
+
+  function esc(s){ return String(s).replace(/[&<>]/g,c=>({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c])) }
+  function countryFromPath(p){ const m = /\/(IN|US|UK|AE|SG|AU|SA|FR|DE|BR|ZA)\//i.exec(p||''); return m?m[1].toUpperCase():'-' }
+
+  async function loadFiles() {
+    const id = commitInput.value.trim();
+    if (!id) return;
+    state.commitId = id;
+    meta.textContent = 'Loading files…';
+    filesPane.style.display = 'none';
+    viewer.style.display = 'none';
+    filesBody.innerHTML = '';
+    runStatus.textContent = '';
+
+    // backend: GET /api/scripts/{commitId}/files
+    const res = await fetch(`/api/scripts/${encodeURIComponent(id)}/files`, { cache:'no-store' });
+    if (!res.ok) {
+      const t = await res.text().catch(()=>res.statusText);
+      meta.innerHTML = `<span class="err">Failed to load: ${esc(t)}</span>`;
+      return;
+    }
+    const files = await res.json();
+    state.files = files;
+    meta.innerHTML = `<span class="ok">${files.length}</span> file(s) in commit <code>${esc(id)}</code>`;
+    filesPane.style.display = '';
+
+    filesBody.innerHTML = '';
+    files.forEach(f => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><strong>${esc(f.name)}</strong><div class="muted">${esc(f.path)}</div></td>
+        <td>${(f.size??0)} B</td>
+        <td>${esc(f.folder||'')}</td>
+        <td>
+          <button class="icon-btn tt" data-tt="Preview" data-path="${esc(f.path)}">👁</button>
+          <button class="icon-btn tt" data-tt="Run (prompt will ask DBs)" data-path="${esc(f.path)}">▶</button>
+          <button class="icon-btn tt" data-tt="Promote to prod" data-path="${esc(f.path)}">⤴</button>
+        </td>`;
+      filesBody.appendChild(tr);
+    });
+  }
+
+  async function preview(path){
+    // backend: GET /api/scripts/{commitId}/file?path=...
+    const res = await fetch(`/api/scripts/${encodeURIComponent(state.commitId)}/file?path=${encodeURIComponent(path)}`, { cache:'no-store' });
+    if (!res.ok) {
+      const t = await res.text().catch(()=>res.statusText);
+      code.textContent = `Load error: ${t}`;
+      viewer.style.display = '';
+      return;
+    }
+    const payload = await res.json();
+    state.current = { path, content: payload.content || '' };
+    viewPath.textContent = path;
+    viewCountry.textContent = countryFromPath(path);
+    code.textContent = payload.content || '';
+    viewer.style.display = '';
+    runStatus.textContent = '';
+  }
+
+  async function runCurrent(){
+    if (!state.current) return;
+    const sel = [];
+    if (dbSIT.checked) sel.push('SIT');
+    if (dbQA.checked)  sel.push('QA');
+    if (sel.length === 0) { runStatus.innerHTML = `<span class="err">Choose DB(s) first.</span>`; return; }
+    runStatus.textContent = 'Executing…';
+
+    // backend: POST /api/scripts/{commitId}/execute  { path, dbs:[] }
+    const res = await fetch(`/api/scripts/${encodeURIComponent(state.commitId)}/execute`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ path: state.current.path, dbs: sel })
+    });
+    const txt = await res.text().catch(()=>res.statusText);
+    if (!res.ok) {
+      runStatus.innerHTML = `<span class="err">Failed (${res.status}): ${esc(txt)}</span>`;
+      return;
+    }
+    runStatus.innerHTML = `<span class="ok">Done</span><pre class="code" style="margin-top:6px">${esc(txt)}</pre>`;
+  }
+
+  async function promoteCurrent(){
+    if (!state.current) return;
+    if (!confirm('Move this file to the prod folder on the repo?')) return;
+    // backend: POST /api/scripts/{commitId}/promote { path }
+    const res = await fetch(`/api/scripts/${encodeURIComponent(state.commitId)}/promote`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ path: state.current.path })
+    });
+    const txt = await res.text().catch(()=>res.statusText);
+    if (!res.ok) {
+      alert(`Promote failed (${res.status}): ${txt}`); return;
+    }
+    alert('Promoted to prod folder.');
+  }
+
+  // Events
+  loadBtn.onclick = loadFiles;
+  filesBody.addEventListener('click', (e) => {
+    const btn = e.target.closest('button'); if (!btn) return;
+    const p = btn.getAttribute('data-path'); if (!p) return;
+    const hint = btn.textContent.trim();
+    if (hint === '👁') preview(p);
+    else if (hint === '▶') { preview(p).then(()=>runCurrent()); }
+    else if (hint === '⤴') { preview(p).then(()=>promoteCurrent()); }
+  });
+  runBtn.onclick = runCurrent;
+  promoteBtn.onclick = promoteCurrent;
+})();
+</script>
+</body>
+</html>
