@@ -404,3 +404,67 @@ td{padding:12px 12px;vertical-align:middle;font-size:14px;color:#dbeefc}
 .diff-title { font-size:12px; color: var(--muted); margin-bottom: 6px; }
 .diff-pre { background:#0d1117; color:#e6eef6; border-radius:8px; border:1px solid rgba(255,255,255,0.06); padding:10px; max-height: 220px; overflow:auto; }
 @media (max-width: 900px){ .diff-grid { grid-template-columns: 1fr; } }
+
+.env-modal.hidden { display: none; }
+  .env-modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,.45);
+    display: flex; align-items: center; justify-content: center; z-index: 9999;
+  }
+  .env-modal__dialog {
+    width: min(520px, 92vw); background: #fff; border-radius: 12px;
+    padding: 20px; box-shadow: 0 12px 40px rgba(0,0,0,.25);
+  }
+  .env-modal__row { display: grid; gap: 6px; margin: 12px 0; }
+  .env-modal__actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+  .btn { padding: 8px 14px; border: 0; border-radius: 8px; cursor: pointer; }
+  .btn-primary { background: #2563eb; color: #fff; }
+  .btn-secondary { background: #e5e7eb; color: #111827; }
+  select, label { font-size: 14px; }
+  select { padding: 8px; border-radius: 8px; border: 1px solid #e5e7eb; }
+
+  .card.card-filter.active { outline: 2px solid var(--blue-500); box-shadow: 0 0 0 3px rgba(37,99,235,.2); }
+  .card.card-filter[aria-pressed="true"] { cursor: default; }
+
+  /* kdash-tooltips */
+  .icon-btn {
+    position: relative;
+  }
+
+  /* Tooltip bubble */
+  .icon-btn:hover::after {
+    content: attr(title);
+    position: absolute;
+    bottom: 125%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(30, 30, 30, 0.92);
+    color: #fff;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 1;
+    z-index: 50;
+  }
+
+  /* Tooltip arrow */
+  .icon-btn:hover::before {
+    content: "";
+    position: absolute;
+    bottom: 115%;
+    left: 50%;
+    transform: translateX(-50%);
+    border-width: 5px;
+    border-style: solid;
+    border-color: rgba(30, 30, 30, 0.92) transparent transparent transparent;
+    opacity: 1;
+    z-index: 49;
+  }
+
+  /* Hide until hover */
+  .icon-btn::after,
+  .icon-btn::before {
+    opacity: 0;
+    transition: opacity 0.15s ease-in-out;
+  }
