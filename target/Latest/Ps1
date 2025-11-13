@@ -1,0 +1,27 @@
+$root = "C:\path\to\pipeline\prd"   # update path
+$output = "pipeline_flattened_prd.yaml"
+
+# Clear previous output
+"" | Out-File $output
+
+# Loop through each YAML file in nested folders
+Get-ChildItem -Path $root -Filter *.yaml -Recurse | ForEach-Object {
+
+    $file = $_.FullName
+    $serviceName = $_.BaseName
+
+    # Print header similar to "kubectl describe configmap"
+    Add-Content $output "Name:        $serviceName"
+    Add-Content $output "Namespace:   prd"
+    Add-Content $output "Data:"
+
+    # Read YAML content and indent by 2 spaces like kubectl
+    $yaml = Get-Content $file
+    foreach ($line in $yaml) {
+        Add-Content $output ("  " + $line)
+    }
+
+    Add-Content $output "`n---`n"
+}
+
+Write-Host "Pipeline flattened file generated: $output"
