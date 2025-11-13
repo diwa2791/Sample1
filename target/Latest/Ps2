@@ -1,0 +1,58 @@
+import java.io.*;
+import java.nio.file.*;
+import java.util.*;
+
+public class FlattenYaml {
+
+    public static void main(String[] args) throws Exception {
+        if (args.length < 2) {
+            System.out.println("Usage: java FlattenYaml <pipelineConfigFolder> <outputFile>");
+            System.exit(1);
+        }
+
+        Path root = Paths.get(args[0]);
+        Path outFile = Paths.get(args[1]);
+
+        if (!Files.exists(root) || !Files.isDirectory(root)) {
+            System.err.println("Invalid folder: " + root);
+            System.exit(1);
+        }
+
+        List<Path> yamlFiles = new ArrayList<>();
+
+        // Collect all *.yaml or *.yml
+        try (var stream = Files.walk(root)) {
+            stream.filter(p -> p.toString().endsWith(".yaml") || p.toString().endsWith(".yml"))
+                  .forEach(yamlFiles::add);
+        }
+
+        // Sort for consistent output
+        yamlFiles.sort(Comparator.comparing(Path::toString));
+
+        System.out.println("Found YAML files: " + yamlFiles.size());
+        System.out.println("Writing to: " + outFile);
+
+        try (BufferedWriter writer = Files.newBufferedWriter(outFile)) {
+
+            for (Path yaml : yamlFiles) {
+                String serviceName = yaml.getFileName().toString();
+
+                writer.write("============================================================\n");
+                writer.write("=== " + serviceName + " ===\n");
+                writer.write("============================================================\n\n");
+
+                List<String> lines = Files.readAllLines(yaml);
+                for (String line : lines) {
+                    writer.write(line);
+                    writer.newLine();
+                }
+
+                writer.newLine();
+                writer.newLine();
+            }
+
+        }
+
+        System.out.println("Done. Combined YAML written to: " + outFile);
+    }
+}
