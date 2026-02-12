@@ -1,0 +1,190 @@
+@Service
+public class TableCompareService {
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    public void compareTable(
+            String tableName,
+            List<String> includeColumns,
+            List<String> excludeColumns,
+            List<String> fallbackKeys
+    ) throws IOException {
+
+        String prodTable = tableName + "1";
+
+        List<String> pkColumns = fetchPrimaryKeys(tableName);
+
+        if (pkColumns.isEmpty()) {
+            if (fallbackKeys == null || fallbackKeys.isEmpty()) {
+                throw new RuntimeException("No primary key found. Provide fallback keys.");
+            }
+            pkColumns = fallbackKeys;
+        }
+
+        List<String> allColumns = fetchAllColumns(tableName);
+
+        List<String> compareColumns = resolveCompareColumns(
+                allColumns, includeColumns, excludeColumns, pkColumns);
+
+        String sql = buildComparisonQuery(
+                tableName, prodTable, pkColumns, compareColumns);
+
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql);
+
+        String html = buildHtml(rows);
+
+        Files.writeString(
+                Paths.get(tableName + "_diff.html"),
+                html,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING
+        );
+    }
+
+
+======================================
+private List<String> fetchPrimaryKeys(String tableName) {
+    String sql = """
+        SELECT kcu.column_name
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name
+        WHERE tc.constraint_type = 'PRIMARY KEY'
+          AND tc.table_name = ?
+        ORDER BY kcu.ordinal_position
+    """;
+
+    return jdbcTemplate.queryForList(sql, String.class, tableName);
+}
+
+
+========================================
+
+private List<String> fetchAllColumns(String tableName) {
+    String sql = """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = ?
+        ORDER BY ordinal_position
+    """;
+
+    return jdbcTemplate.queryForList(sql, String.class, tableName);
+}
+
+
+======================================
+
+private List<String> resolveCompareColumns(
+        List<String> allColumns,
+        List<String> include,
+        List<String> exclude,
+        List<String> pkColumns) {
+
+    Set<String> result;
+
+    if (include != null && !include.isEmpty()) {
+        result = new HashSet<>(include);
+    } else {
+        result = new HashSet<>(allColumns);
+    }
+
+    if (exclude != null) {
+        result.removeAll(exclude);
+    }
+
+    result.removeAll(pkColumns);
+
+    return new ArrayList<>(result);
+}
+
+
+======================================= 
+
+private String buildComparisonQuery(
+        String testTable,
+        String prodTable,
+        List<String> pkColumns,
+        List<String> compareColumns) {
+
+    StringBuilder join = new StringBuilder();
+    for (int i = 0; i < pkColumns.size(); i++) {
+        if (i > 0) join.append(" AND ");
+        join.append("t.").append(pkColumns.get(i))
+            .append(" = p.").append(pkColumns.get(i));
+    }
+
+    StringBuilder diffCondition = new StringBuilder();
+    for (int i = 0; i < compareColumns.size(); i++) {
+        if (i > 0) diffCondition.append(" OR ");
+        diffCondition.append("t.").append(compareColumns.get(i))
+                .append(" IS DISTINCT FROM p.")
+                .append(compareColumns.get(i));
+    }
+
+    return """
+        SELECT *,
+        CASE
+            WHEN """ + buildNullCheck("t", pkColumns) + """ THEN 'ONLY_IN_PROD'
+            WHEN """ + buildNullCheck("p", pkColumns) + """ THEN 'ONLY_IN_TEST'
+            WHEN (""" + diffCondition + """) THEN 'DIFFERENT'
+        END AS status
+        FROM """ + testTable + """ t
+        FULL OUTER JOIN """ + prodTable + """ p
+        ON """ + join + """
+        WHERE
+            """ + buildNullCheck("t", pkColumns) + """
+            OR """ + buildNullCheck("p", pkColumns) + """
+            OR (""" + diffCondition + """)
+        ORDER BY """ + String.join(",", pkColumns);
+}
+
+
+===========================================
+
+private String buildNullCheck(String alias, List<String> pkColumns) {
+    return pkColumns.stream()
+            .map(col -> alias + "." + col + " IS NULL")
+            .collect(Collectors.joining(" AND "));
+}
+
+
+=====================================
+
+private String buildHtml(List<Map<String, Object>> rows) {
+
+    StringBuilder sb = new StringBuilder();
+    sb.append("<html><body><table border='1'>");
+
+    if (rows.isEmpty()) {
+        sb.append("<tr><td>No differences found</td></tr>");
+    } else {
+        sb.append("<tr>");
+        rows.get(0).keySet()
+                .forEach(col -> sb.append("<th>").append(col).append("</th>"));
+        sb.append("</tr>");
+
+        for (Map<String, Object> row : rows) {
+            sb.append("<tr>");
+            row.values().forEach(val ->
+                    sb.append("<td>")
+                      .append(val == null ? "null" : val.toString())
+                      .append("</td>")
+            );
+            sb.append("</tr>");
+        }
+    }
+
+    sb.append("</table></body></html>");
+    return sb.toString();
+}
+
+
+===================================================
+
+compareTable(
+    "employee",
+    includeColumns = List.of("name", "salary"),
+    excludeColumns = List.of("updated_at"),
+    fallbackKeys = List.of("emp_id", "dept_id") // only used if no PK
+)
