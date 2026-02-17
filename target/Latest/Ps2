@@ -1,58 +1,278 @@
-import java.io.*;
-import java.nio.file.*;
-import java.util.*;
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Table Comparison</title>
 
-public class FlattenYaml {
+    <link rel="stylesheet"
+          href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
 
-    public static void main(String[] args) throws Exception {
-        if (args.length < 2) {
-            System.out.println("Usage: java FlattenYaml <pipelineConfigFolder> <outputFile>");
-            System.exit(1);
+    <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+
+    <style>
+
+        /* ========== PAGE BACKGROUND ========== */
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: linear-gradient(135deg, #0f2027, #2c5364, #00c9a7);
+            font-family: "Segoe UI", sans-serif;
+            color: white;
         }
 
-        Path root = Paths.get(args[0]);
-        Path outFile = Paths.get(args[1]);
-
-        if (!Files.exists(root) || !Files.isDirectory(root)) {
-            System.err.println("Invalid folder: " + root);
-            System.exit(1);
+        /* ========== GLASS CARD ========== */
+        .glass-card {
+            background: rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
         }
 
-        List<Path> yamlFiles = new ArrayList<>();
-
-        // Collect all *.yaml or *.yml
-        try (var stream = Files.walk(root)) {
-            stream.filter(p -> p.toString().endsWith(".yaml") || p.toString().endsWith(".yml"))
-                  .forEach(yamlFiles::add);
+        h3 {
+            font-weight: 300;
+            letter-spacing: 1px;
         }
 
-        // Sort for consistent output
-        yamlFiles.sort(Comparator.comparing(Path::toString));
-
-        System.out.println("Found YAML files: " + yamlFiles.size());
-        System.out.println("Writing to: " + outFile);
-
-        try (BufferedWriter writer = Files.newBufferedWriter(outFile)) {
-
-            for (Path yaml : yamlFiles) {
-                String serviceName = yaml.getFileName().toString();
-
-                writer.write("============================================================\n");
-                writer.write("=== " + serviceName + " ===\n");
-                writer.write("============================================================\n\n");
-
-                List<String> lines = Files.readAllLines(yaml);
-                for (String line : lines) {
-                    writer.write(line);
-                    writer.newLine();
-                }
-
-                writer.newLine();
-                writer.newLine();
-            }
-
+        /* ========== TABLE STYLING ========== */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            color: white;
         }
 
-        System.out.println("Done. Combined YAML written to: " + outFile);
-    }
+        thead {
+            background: rgba(255,255,255,0.15);
+            position: sticky;
+            top: 0;
+            backdrop-filter: blur(8px);
+        }
+
+        th, td {
+            padding: 12px 15px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        tbody tr:hover {
+            background: rgba(255,255,255,0.1);
+        }
+
+        /* ========== STATUS COLORS ========== */
+        .modified-row { background: rgba(255,193,7,0.15); }
+        .only-test-row { background: rgba(220,53,69,0.15); }
+        .only-prod-row { background: rgba(13,110,253,0.15); }
+
+        .old-value {
+            color: #ff6b6b;
+            font-weight: bold;
+        }
+
+        .new-value {
+            color: #4cd137;
+            font-weight: bold;
+        }
+
+        /* ========== SUMMARY BADGES ========== */
+        .badge-glass {
+            background: rgba(255,255,255,0.15);
+            padding: 10px 15px;
+            border-radius: 20px;
+            margin-right: 10px;
+        }
+
+        /* ========== SPINNER OVERLAY ========== */
+        #loadingOverlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+        }
+
+        .spinner-border {
+            width: 4rem;
+            height: 4rem;
+        }
+
+        /* Expand button */
+        .expand-btn {
+            background: rgba(255,255,255,0.2);
+            border: none;
+            color: white;
+            padding: 5px 10px;
+            border-radius: 6px;
+        }
+
+        .expand-btn:hover {
+            background: rgba(255,255,255,0.35);
+        }
+
+    </style>
+</head>
+
+<body>
+
+<div id="loadingOverlay">
+    <div class="spinner-border text-light" role="status"></div>
+</div>
+
+<div class="container mt-5">
+    <div class="glass-card">
+
+        <h3 class="mb-4">TABLE COMPARISON</h3>
+
+        <div class="row mb-4">
+            <div class="col-md-6">
+                <input id="tableName"
+                       class="form-control"
+                       placeholder="Enter table name"
+                       style="background:rgba(255,255,255,0.15); color:white; border:none;">
+            </div>
+            <div class="col-md-2">
+                <button class="btn btn-light w-100"
+                        onclick="runComparison()">Compare</button>
+            </div>
+        </div>
+
+        <!-- SUMMARY -->
+        <div id="summarySection" style="display:none;" class="mb-4">
+            <div class="badge-glass">Modified: <span id="different"></span></div>
+            <div class="badge-glass">Only in Test: <span id="onlyTest"></span></div>
+            <div class="badge-glass">Only in Prod: <span id="onlyProd"></span></div>
+        </div>
+
+        <!-- TABLE -->
+        <div id="tableSection" style="display:none;">
+            <table id="modifiedTable">
+                <thead>
+                <tr>
+                    <th>Primary Key</th>
+                    <th>Changed Columns</th>
+                    <th>Action</th>
+                </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+
+    </div>
+</div>
+
+<script>
+
+function showLoading() {
+    $("#loadingOverlay").css("display", "flex");
 }
+
+function hideLoading() {
+    $("#loadingOverlay").hide();
+}
+
+function runComparison() {
+
+    let tableName = $("#tableName").val();
+    if (!tableName) return;
+
+    showLoading();
+
+    fetch("/api/compare/" + tableName, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
+    })
+    .then(res => res.json())
+    .then(data => {
+        renderResult(data);
+        hideLoading();
+    })
+    .catch(err => {
+        hideLoading();
+        alert("Error occurred");
+    });
+}
+
+function renderResult(data) {
+
+    $("#summarySection").show();
+    $("#tableSection").show();
+
+    $("#different").text(data.summary.different || 0);
+    $("#onlyTest").text(data.summary.onlyInTest || 0);
+    $("#onlyProd").text(data.summary.onlyInProd || 0);
+
+    let tbody = $("#modifiedTable tbody");
+    tbody.empty();
+
+    data.modifiedRows.forEach((row, index) => {
+
+        let pk = Object.values(row.primaryKey).join(" | ");
+
+        tbody.append(`
+            <tr class="modified-row">
+                <td>${pk}</td>
+                <td>${row.changedColumns.length}</td>
+                <td>
+                    <button class="expand-btn"
+                        onclick="toggleDetails(${index})">
+                        Expand
+                    </button>
+                </td>
+            </tr>
+            <tr id="detail-${index}" style="display:none;">
+                <td colspan="3">
+                    ${buildDetail(row)}
+                </td>
+            </tr>
+        `);
+    });
+}
+
+function buildDetail(row) {
+
+    let html = `
+        <div class="glass-card mt-3">
+            <strong>Primary Key</strong><br>`;
+
+    Object.entries(row.primaryKey).forEach(([k,v]) => {
+        html += `${k} = ${v}<br>`;
+    });
+
+    html += `<br>
+        <table>
+            <thead>
+                <tr>
+                    <th>Column</th>
+                    <th>Test Value</th>
+                    <th>Prod Value</th>
+                </tr>
+            </thead>
+            <tbody>`;
+
+    row.changedColumns.forEach(col => {
+        html += `
+            <tr>
+                <td>${col.columnName}</td>
+                <td class="old-value">${col.testValue ?? ''}</td>
+                <td class="new-value">${col.prodValue ?? ''}</td>
+            </tr>
+        `;
+    });
+
+    html += `</tbody></table></div>`;
+
+    return html;
+}
+
+function toggleDetails(index) {
+    $("#detail-" + index).toggle();
+}
+
+</script>
+
+</body>
+</html>
