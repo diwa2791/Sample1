@@ -21,3 +21,14 @@
         </button>
     </form>
 </div>
+
+
+
+
+
+    <th:block th:each="row,iterStat :
+    ${#lists.subList(
+        diff.modifiedRows,
+        modPage * pageSize,
+        T(java.lang.Math).min((modPage + 1) * pageSize, diff.modifiedRows.size())
+    )}">
