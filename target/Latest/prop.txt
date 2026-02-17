@@ -1,17 +1,218 @@
-azure:
-  org: your-org
-  project: your-project
-  repo: your-repo
-  pat: ${AZURE_PAT}   # set as env var; don’t hardcode
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <title>ConfigMap Comparison</title>
 
-db:
-  sit:
-    url: jdbc:postgresql://sit-db-host:5432/app
-    user: appuser
-    pass: secret
-  qa:
-    url: jdbc:postgresql://qa-db-host:5432/app
-    user: appuser
-    pass: secret
-repo:
-  prodFolder: /sql/prod
+    <style>
+        body {
+            margin: 0;
+            font-family: 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #3ca6a6, #6b3fa0);
+            min-height: 100vh;
+            padding: 60px;
+        }
+
+        h2 {
+            color: white;
+            margin-bottom: 20px;
+        }
+
+        .search-box input {
+            padding: 10px;
+            width: 280px;
+            border-radius: 8px;
+            border: none;
+            outline: none;
+            margin-bottom: 30px;
+        }
+
+        .service-card {
+            backdrop-filter: blur(10px);
+            background: rgba(255, 255, 255, 0.15);
+            border-radius: 12px;
+            margin-bottom: 25px;
+            padding: 0;
+            color: white;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.25);
+            overflow: hidden;
+        }
+
+        .service-header {
+            padding: 18px 25px;
+            font-weight: 600;
+            cursor: pointer;
+            background: rgba(0, 0, 0, 0.2);
+        }
+
+        .service-content {
+            display: none;
+            padding: 20px 25px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+
+        thead {
+            background: rgba(0, 0, 0, 0.25);
+        }
+
+        th, td {
+            padding: 12px 10px;
+            text-align: left;
+        }
+
+        th {
+            font-weight: 600;
+        }
+
+        tbody tr {
+            border-bottom: 1px solid rgba(255,255,255,0.2);
+        }
+
+        tbody tr:last-child {
+            border-bottom: none;
+        }
+
+        .section-title {
+            margin-top: 20px;
+            font-weight: 600;
+            font-size: 15px;
+            opacity: 0.9;
+        }
+
+        .diff-devops {
+            color: #ffb3b3;
+        }
+
+        .diff-kube {
+            color: #b3ffd9;
+        }
+    </style>
+
+    <script>
+        function toggleService(id) {
+            const el = document.getElementById(id);
+            el.style.display =
+                el.style.display === "none" ? "block" : "none";
+        }
+
+        function filterServices() {
+            const input = document.getElementById("searchInput").value.toLowerCase();
+            const cards = document.getElementsByClassName("service-card");
+
+            for (let card of cards) {
+                const header = card.querySelector(".service-header");
+                const text = header.textContent.toLowerCase();
+
+                if (text.includes(input)) {
+                    card.style.display = "block";
+                    card.querySelector(".service-content").style.display = "block";
+                } else {
+                    card.style.display = "none";
+                }
+            }
+        }
+    </script>
+</head>
+
+<body>
+
+<h2>ConfigMap Comparison</h2>
+
+<div class="search-box">
+    <input type="text"
+           id="searchInput"
+           placeholder="Search service..."
+           onkeyup="filterServices()">
+</div>
+
+<div th:each="serviceEntry, serviceStat : ${compareResult}"
+     class="service-card">
+
+    <div class="service-header"
+         th:text="${serviceEntry.key}"
+         th:onclick="'toggleService(\'service-' + ${serviceStat.index} + '\')'">
+    </div>
+
+    <div class="service-content"
+         th:id="'service-' + ${serviceStat.index}">
+
+        <!-- PROP DIFFS -->
+        <div th:if="${serviceEntry.value['PROP DIFFS']} != null">
+            <div class="section-title">Property Differences</div>
+
+            <table>
+                <thead>
+                <tr>
+                    <th>Property</th>
+                    <th>DevopsYaml</th>
+                    <th>KubeYaml</th>
+                </tr>
+                </thead>
+
+                <tbody th:each="propEntry : ${serviceEntry.value['PROP DIFFS']}">
+                <tr>
+                    <td th:text="${propEntry.key}"></td>
+                    <td class="diff-devops"
+                        th:text="${propEntry.value['DevopsYaml']}"></td>
+                    <td class="diff-kube"
+                        th:text="${propEntry.value['KubeYaml']}"></td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- ADDITIONAL IN DEVOPS -->
+        <div th:if="${serviceEntry.value['ADDTNL IN DevopsYaml']} != null
+                     and !#maps.isEmpty(serviceEntry.value['ADDTNL IN DevopsYaml'])}">
+            <div class="section-title">Additional in DevopsYaml</div>
+
+            <table>
+                <thead>
+                <tr>
+                    <th>Property</th>
+                    <th>Value</th>
+                </tr>
+                </thead>
+
+                <tbody th:each="entry :
+                      ${serviceEntry.value['ADDTNL IN DevopsYaml']}">
+                <tr>
+                    <td th:text="${entry.key}"></td>
+                    <td th:text="${entry.value}"></td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- ADDITIONAL IN KUBE -->
+        <div th:if="${serviceEntry.value['ADDTNL IN KubeYaml']} != null
+                     and !#maps.isEmpty(serviceEntry.value['ADDTNL IN KubeYaml'])}">
+            <div class="section-title">Additional in KubeYaml</div>
+
+            <table>
+                <thead>
+                <tr>
+                    <th>Property</th>
+                    <th>Value</th>
+                </tr>
+                </thead>
+
+                <tbody th:each="entry :
+                      ${serviceEntry.value['ADDTNL IN KubeYaml']}">
+                <tr>
+                    <td th:text="${entry.key}"></td>
+                    <td th:text="${entry.value}"></td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+
+    </div>
+</div>
+
+</body>
+</html>
