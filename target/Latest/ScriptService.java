@@ -45,6 +45,37 @@
         .old-value { color: #ff6b6b; font-weight: bold; }
         .new-value { color: #4cd137; font-weight: bold; }
 
+        .expand-btn {
+            background: rgba(255,255,255,0.2);
+            border: none;
+            color: white;
+            padding: 5px 10px;
+            border-radius: 6px;
+        }
+
+        .expand-btn:hover {
+            background: rgba(255,255,255,0.35);
+        }
+
+        /* Spinner Overlay */
+        #loadingOverlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+        }
+
+        .spinner-border {
+            width: 4rem;
+            height: 4rem;
+        }
+
         .nav-tabs .nav-link {
             color: white;
         }
@@ -60,13 +91,22 @@
 
 <body>
 
+<!-- SPINNER -->
+<div id="loadingOverlay">
+    <div class="spinner-border text-light"></div>
+</div>
+
 <div class="container mt-5">
     <div class="glass-card">
 
         <h3 class="mb-4">TABLE COMPARISON</h3>
 
         <!-- FORM -->
-        <form th:action="@{/compare}" th:object="${request}" method="post">
+        <form th:action="@{/compare}"
+              th:object="${request}"
+              method="post"
+              onsubmit="showLoading()">
+
             <div class="row mb-4">
                 <div class="col-md-6">
                     <input type="text"
@@ -97,9 +137,9 @@
             </span>
         </div>
 
-        <!-- TABS -->
         <div th:if="${diff != null}">
 
+            <!-- TABS -->
             <ul class="nav nav-tabs mb-3">
                 <li class="nav-item">
                     <button class="nav-link active"
@@ -126,7 +166,7 @@
 
             <div class="tab-content">
 
-                <!-- MODIFIED TAB -->
+                <!-- ================= MODIFIED TAB ================= -->
                 <div class="tab-pane fade show active" id="modifiedTab">
 
                     <table>
@@ -134,60 +174,180 @@
                         <tr>
                             <th>Primary Key</th>
                             <th>Changed Columns</th>
+                            <th>Action</th>
                         </tr>
                         </thead>
                         <tbody>
-                        <tr th:each="row : ${diff.modifiedRows}">
-                            <td th:text="${#strings.listJoin(row.primaryKey.values(),' | ')}"></td>
-                            <td th:text="${row.changedColumns.size()}"></td>
-                        </tr>
+
+                        <th:block th:each="row,iterStat : ${diff.modifiedRows}">
+
+                            <tr>
+                                <td th:text="${#strings.listJoin(row.primaryKey.values(),' | ')}"></td>
+                                <td th:text="${row.changedColumns.size()}"></td>
+                                <td>
+                                    <button type="button"
+                                            class="expand-btn"
+                                            th:attr="onclick='toggleDetails(\'mod-' + ${iterStat.index} + '\')'">
+                                        Expand
+                                    </button>
+                                </td>
+                            </tr>
+
+                            <tr th:attr="id='mod-' + ${iterStat.index}"
+                                style="display:none;">
+                                <td colspan="3">
+                                    <div class="glass-card mt-2">
+                                        <table>
+                                            <thead>
+                                            <tr>
+                                                <th>Column</th>
+                                                <th>Test</th>
+                                                <th>Prod</th>
+                                            </tr>
+                                            </thead>
+                                            <tbody>
+                                            <tr th:each="col : ${row.changedColumns}">
+                                                <td th:text="${col.columnName}"></td>
+                                                <td class="old-value"
+                                                    th:text="${col.testValue}"></td>
+                                                <td class="new-value"
+                                                    th:text="${col.prodValue}"></td>
+                                            </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </td>
+                            </tr>
+
+                        </th:block>
+
                         </tbody>
                     </table>
-
                 </div>
 
-                <!-- ONLY TEST TAB -->
+                <!-- ================= ONLY IN TEST TAB ================= -->
                 <div class="tab-pane fade" id="onlyTestTab">
 
                     <table>
                         <thead>
                         <tr>
                             <th>Primary Key</th>
+                            <th>Action</th>
                         </tr>
                         </thead>
                         <tbody>
-                        <tr th:each="row : ${diff.onlyInTestRows}">
-                            <td th:text="${#strings.listJoin(row.primaryKey.values(),' | ')}"></td>
-                        </tr>
+
+                        <th:block th:each="row,iterStat : ${diff.onlyInTestRows}">
+
+                            <tr>
+                                <td th:text="${#strings.listJoin(row.primaryKey.values(),' | ')}"></td>
+                                <td>
+                                    <button type="button"
+                                            class="expand-btn"
+                                            th:attr="onclick='toggleDetails(\'test-' + ${iterStat.index} + '\')'">
+                                        Expand
+                                    </button>
+                                </td>
+                            </tr>
+
+                            <tr th:attr="id='test-' + ${iterStat.index}"
+                                style="display:none;">
+                                <td colspan="2">
+                                    <div class="glass-card mt-2">
+                                        <table>
+                                            <thead>
+                                            <tr>
+                                                <th>Column</th>
+                                                <th>Value</th>
+                                            </tr>
+                                            </thead>
+                                            <tbody>
+                                            <tr th:each="entry : ${row.testRow}">
+                                                <td th:text="${entry.key}"></td>
+                                                <td th:text="${entry.value}"></td>
+                                            </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </td>
+                            </tr>
+
+                        </th:block>
+
                         </tbody>
                     </table>
-
                 </div>
 
-                <!-- ONLY PROD TAB -->
+                <!-- ================= ONLY IN PROD TAB ================= -->
                 <div class="tab-pane fade" id="onlyProdTab">
 
                     <table>
                         <thead>
                         <tr>
                             <th>Primary Key</th>
+                            <th>Action</th>
                         </tr>
                         </thead>
                         <tbody>
-                        <tr th:each="row : ${diff.onlyInProdRows}">
-                            <td th:text="${#strings.listJoin(row.primaryKey.values(),' | ')}"></td>
-                        </tr>
+
+                        <th:block th:each="row,iterStat : ${diff.onlyInProdRows}">
+
+                            <tr>
+                                <td th:text="${#strings.listJoin(row.primaryKey.values(),' | ')}"></td>
+                                <td>
+                                    <button type="button"
+                                            class="expand-btn"
+                                            th:attr="onclick='toggleDetails(\'prod-' + ${iterStat.index} + '\')'">
+                                        Expand
+                                    </button>
+                                </td>
+                            </tr>
+
+                            <tr th:attr="id='prod-' + ${iterStat.index}"
+                                style="display:none;">
+                                <td colspan="2">
+                                    <div class="glass-card mt-2">
+                                        <table>
+                                            <thead>
+                                            <tr>
+                                                <th>Column</th>
+                                                <th>Value</th>
+                                            </tr>
+                                            </thead>
+                                            <tbody>
+                                            <tr th:each="entry : ${row.prodRow}">
+                                                <td th:text="${entry.key}"></td>
+                                                <td th:text="${entry.value}"></td>
+                                            </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </td>
+                            </tr>
+
+                        </th:block>
+
                         </tbody>
                     </table>
 
                 </div>
 
             </div>
-
         </div>
 
     </div>
 </div>
+
+<script>
+function showLoading() {
+    document.getElementById("loadingOverlay").style.display = "flex";
+}
+
+function toggleDetails(id) {
+    let row = document.getElementById(id);
+    row.style.display = (row.style.display === "none") ? "table-row" : "none";
+}
+</script>
 
 </body>
 </html>
