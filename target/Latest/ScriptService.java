@@ -6,6 +6,8 @@
     <link rel="stylesheet"
           href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
 
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
     <style>
         body {
             margin: 0;
@@ -16,7 +18,7 @@
         }
 
         .glass-card {
-            background: rgba(255, 255, 255, 0.08);
+            background: rgba(255,255,255,0.08);
             backdrop-filter: blur(12px);
             border-radius: 12px;
             padding: 25px;
@@ -36,40 +38,27 @@
         }
 
         th, td {
-            padding: 12px;
+            padding: 10px;
             border-bottom: 1px solid rgba(255,255,255,0.1);
         }
-
-        .modified-row { background: rgba(255,193,7,0.15); }
 
         .old-value { color: #ff6b6b; font-weight: bold; }
         .new-value { color: #4cd137; font-weight: bold; }
 
-        #loadingOverlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0,0,0,0.5);
-            display: none;
-            align-items: center;
-            justify-content: center;
-            z-index: 9999;
+        .nav-tabs .nav-link {
+            color: white;
         }
 
-        .spinner-border {
-            width: 4rem;
-            height: 4rem;
+        .nav-tabs .nav-link.active {
+            background: rgba(255,255,255,0.2);
+            border: none;
+            color: white;
         }
+
     </style>
 </head>
 
 <body>
-
-<div id="loadingOverlay">
-    <div class="spinner-border text-light"></div>
-</div>
 
 <div class="container mt-5">
     <div class="glass-card">
@@ -77,9 +66,7 @@
         <h3 class="mb-4">TABLE COMPARISON</h3>
 
         <!-- FORM -->
-        <form th:action="@{/compare}" th:object="${request}" method="post"
-              onsubmit="showLoading()">
-
+        <form th:action="@{/compare}" th:object="${request}" method="post">
             <div class="row mb-4">
                 <div class="col-md-6">
                     <input type="text"
@@ -98,7 +85,7 @@
         </form>
 
         <!-- SUMMARY -->
-        <div th:if="${diff != null}" class="mb-4">
+        <div th:if="${diff != null}" class="mb-3">
             <span class="badge bg-warning me-2">
                 Modified: <span th:text="${diff.summary.different}"></span>
             </span>
@@ -110,82 +97,97 @@
             </span>
         </div>
 
-        <!-- MODIFIED TABLE -->
+        <!-- TABS -->
         <div th:if="${diff != null}">
-            <table>
-                <thead>
-                <tr>
-                    <th>Primary Key</th>
-                    <th>Changed Columns</th>
-                    <th>Action</th>
-                </tr>
-                </thead>
-                <tbody>
-                <tr th:each="row,iterStat : ${diff.modifiedRows}"
-                    class="modified-row">
 
-                    <td th:text="${#strings.listJoin(row.primaryKey.values(),' | ')}"></td>
-                    <td th:text="${row.changedColumns.size()}"></td>
-                    <td>
-                        <button type="button"
-                                class="btn btn-sm btn-light"
-                                th:attr="onclick='toggleDetails(' + ${iterStat.index} + ')'">
-                            Expand
-                        </button>
-                    </td>
-                </tr>
+            <ul class="nav nav-tabs mb-3">
+                <li class="nav-item">
+                    <button class="nav-link active"
+                            data-bs-toggle="tab"
+                            data-bs-target="#modifiedTab">
+                        Modified
+                    </button>
+                </li>
+                <li class="nav-item">
+                    <button class="nav-link"
+                            data-bs-toggle="tab"
+                            data-bs-target="#onlyTestTab">
+                        Only in Test
+                    </button>
+                </li>
+                <li class="nav-item">
+                    <button class="nav-link"
+                            data-bs-toggle="tab"
+                            data-bs-target="#onlyProdTab">
+                        Only in Prod
+                    </button>
+                </li>
+            </ul>
 
-                <!-- Detail Row -->
-                <tr th:each="row,iterStat : ${diff.modifiedRows}"
-                    th:attr="id='detail-' + ${iterStat.index}"
-                    style="display:none;">
+            <div class="tab-content">
 
-                    <td colspan="3">
-                        <div class="glass-card mt-2">
-                            <strong>Column Differences</strong>
-                            <table class="mt-3">
-                                <thead>
-                                <tr>
-                                    <th>Column</th>
-                                    <th>Test</th>
-                                    <th>Prod</th>
-                                </tr>
-                                </thead>
-                                <tbody>
-                                <tr th:each="col : ${row.changedColumns}">
-                                    <td th:text="${col.columnName}"></td>
-                                    <td class="old-value"
-                                        th:text="${col.testValue}"></td>
-                                    <td class="new-value"
-                                        th:text="${col.prodValue}"></td>
-                                </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </td>
-                </tr>
+                <!-- MODIFIED TAB -->
+                <div class="tab-pane fade show active" id="modifiedTab">
 
-                </tbody>
-            </table>
+                    <table>
+                        <thead>
+                        <tr>
+                            <th>Primary Key</th>
+                            <th>Changed Columns</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        <tr th:each="row : ${diff.modifiedRows}">
+                            <td th:text="${#strings.listJoin(row.primaryKey.values(),' | ')}"></td>
+                            <td th:text="${row.changedColumns.size()}"></td>
+                        </tr>
+                        </tbody>
+                    </table>
+
+                </div>
+
+                <!-- ONLY TEST TAB -->
+                <div class="tab-pane fade" id="onlyTestTab">
+
+                    <table>
+                        <thead>
+                        <tr>
+                            <th>Primary Key</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        <tr th:each="row : ${diff.onlyInTestRows}">
+                            <td th:text="${#strings.listJoin(row.primaryKey.values(),' | ')}"></td>
+                        </tr>
+                        </tbody>
+                    </table>
+
+                </div>
+
+                <!-- ONLY PROD TAB -->
+                <div class="tab-pane fade" id="onlyProdTab">
+
+                    <table>
+                        <thead>
+                        <tr>
+                            <th>Primary Key</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        <tr th:each="row : ${diff.onlyInProdRows}">
+                            <td th:text="${#strings.listJoin(row.primaryKey.values(),' | ')}"></td>
+                        </tr>
+                        </tbody>
+                    </table>
+
+                </div>
+
+            </div>
+
         </div>
 
     </div>
 </div>
-
-<script>
-function showLoading() {
-    document.getElementById("loadingOverlay").style.display = "flex";
-}
-
-function toggleDetails(index) {
-    let row = document.getElementById("detail-" + index);
-    if (row.style.display === "none") {
-        row.style.display = "table-row";
-    } else {
-        row.style.display = "none";
-    }
-}
-</script>
 
 </body>
 </html>
