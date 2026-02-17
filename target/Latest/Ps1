@@ -1,27 +1,361 @@
-$root = "C:\path\to\pipeline\prd"   # update path
-$output = "pipeline_flattened_prd.yaml"
+package com.example.tablecompare;
 
-# Clear previous output
-"" | Out-File $output
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.web.bind.annotation.*;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.stereotype.Service;
 
-# Loop through each YAML file in nested folders
-Get-ChildItem -Path $root -Filter *.yaml -Recurse | ForEach-Object {
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.util.*;
+import java.util.stream.Collectors;
 
-    $file = $_.FullName
-    $serviceName = $_.BaseName
+@SpringBootApplication
+public class TableCompareApplication {
 
-    # Print header similar to "kubectl describe configmap"
-    Add-Content $output "Name:        $serviceName"
-    Add-Content $output "Namespace:   prd"
-    Add-Content $output "Data:"
-
-    # Read YAML content and indent by 2 spaces like kubectl
-    $yaml = Get-Content $file
-    foreach ($line in $yaml) {
-        Add-Content $output ("  " + $line)
+    public static void main(String[] args) {
+        SpringApplication.run(TableCompareApplication.class, args);
     }
 
-    Add-Content $output "`n---`n"
-}
+    // ================= CONTROLLER =================
 
-Write-Host "Pipeline flattened file generated: $output"
+    @RestController
+    @RequestMapping("/api/compare")
+    public static class CompareController {
+
+        private final TableCompareService service;
+
+        public CompareController(TableCompareService service) {
+            this.service = service;
+        }
+
+        @PostMapping("/{tableName}")
+        public TableDiffResponseDTO compare(
+                @PathVariable String tableName,
+                @RequestBody(required = false) CompareRequest request) {
+
+            if (request == null) request = new CompareRequest();
+
+            return service.compareTable(
+                    tableName,
+                    request.includeColumns,
+                    request.excludeColumns,
+                    request.fallbackKeys);
+        }
+
+        @PostMapping("/{tableName}/export")
+        public void export(
+                @PathVariable String tableName,
+                @RequestBody(required = false) CompareRequest request,
+                HttpServletResponse response) throws IOException {
+
+            if (request == null) request = new CompareRequest();
+
+            TableDiffResponseDTO diff = service.compareTable(
+                    tableName,
+                    request.includeColumns,
+                    request.excludeColumns,
+                    request.fallbackKeys);
+
+            response.setContentType("text/csv");
+            response.setHeader("Content-Disposition",
+                    "attachment; filename=" + tableName + "_diff.csv");
+
+            service.writeCsv(diff, response.getWriter());
+        }
+    }
+
+    // ================= SERVICE =================
+
+    @Service
+    public static class TableCompareService {
+
+        private final JdbcTemplate jdbcTemplate;
+
+        public TableCompareService(JdbcTemplate jdbcTemplate) {
+            this.jdbcTemplate = jdbcTemplate;
+        }
+
+        public TableDiffResponseDTO compareTable(
+                String tableName,
+                List<String> includeColumns,
+                List<String> excludeColumns,
+                List<String> fallbackKeys) {
+
+            String prodTable = tableName + "1";
+
+            List<String> pkColumns = fetchPrimaryKeys(tableName);
+
+            if (pkColumns.isEmpty()) {
+                if (fallbackKeys == null || fallbackKeys.isEmpty()) {
+                    throw new RuntimeException("No primary key found. Provide fallback keys.");
+                }
+                pkColumns = fallbackKeys;
+            }
+
+            List<String> allColumns = fetchAllColumns(tableName);
+
+            List<String> compareColumns =
+                    resolveCompareColumns(allColumns, includeColumns, excludeColumns, pkColumns);
+
+            List<Map<String, Object>> rows =
+                    executeDiffQuery(tableName, prodTable, pkColumns, compareColumns);
+
+            return buildResponse(tableName, rows, pkColumns, compareColumns);
+        }
+
+        private List<String> fetchPrimaryKeys(String tableName) {
+            String sql = """
+                SELECT kcu.column_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                  ON tc.constraint_name = kcu.constraint_name
+                WHERE tc.constraint_type = 'PRIMARY KEY'
+                  AND tc.table_name = ?
+                ORDER BY kcu.ordinal_position
+            """;
+            return jdbcTemplate.queryForList(sql, String.class, tableName);
+        }
+
+        private List<String> fetchAllColumns(String tableName) {
+            String sql = """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = ?
+                ORDER BY ordinal_position
+            """;
+            return jdbcTemplate.queryForList(sql, String.class, tableName);
+        }
+
+        private List<String> resolveCompareColumns(
+                List<String> allColumns,
+                List<String> include,
+                List<String> exclude,
+                List<String> pkColumns) {
+
+            Set<String> result = (include != null && !include.isEmpty())
+                    ? new HashSet<>(include)
+                    : new HashSet<>(allColumns);
+
+            if (exclude != null) result.removeAll(exclude);
+
+            result.removeAll(pkColumns);
+
+            return new ArrayList<>(result);
+        }
+
+        private List<Map<String, Object>> executeDiffQuery(
+                String testTable,
+                String prodTable,
+                List<String> pkColumns,
+                List<String> compareColumns) {
+
+            String join = pkColumns.stream()
+                    .map(pk -> "t." + pk + " = p." + pk)
+                    .collect(Collectors.joining(" AND "));
+
+            String diffCondition = compareColumns.stream()
+                    .map(col -> "t." + col + " IS DISTINCT FROM p." + col)
+                    .collect(Collectors.joining(" OR "));
+
+            String nullTest = pkColumns.stream()
+                    .map(pk -> "t." + pk + " IS NULL")
+                    .collect(Collectors.joining(" AND "));
+
+            String nullProd = pkColumns.stream()
+                    .map(pk -> "p." + pk + " IS NULL")
+                    .collect(Collectors.joining(" AND "));
+
+            String selectPK = pkColumns.stream()
+                    .map(pk -> "COALESCE(t." + pk + ", p." + pk + ") AS pk_" + pk)
+                    .collect(Collectors.joining(", "));
+
+            String selectCols = compareColumns.stream()
+                    .map(col -> "t." + col + " AS t_" + col + ", p." + col + " AS p_" + col)
+                    .collect(Collectors.joining(", "));
+
+            String orderBy = pkColumns.stream()
+                    .map(pk -> "pk_" + pk)
+                    .collect(Collectors.joining(", "));
+
+            String sql = """
+                SELECT %s, %s,
+                CASE
+                    WHEN %s THEN 'ONLY_IN_PROD'
+                    WHEN %s THEN 'ONLY_IN_TEST'
+                    WHEN (%s) THEN 'DIFFERENT'
+                END AS status
+                FROM %s t
+                FULL OUTER JOIN %s p
+                ON %s
+                WHERE %s OR %s OR (%s)
+                ORDER BY %s
+            """.formatted(
+                    selectPK,
+                    selectCols,
+                    nullTest,
+                    nullProd,
+                    diffCondition,
+                    testTable,
+                    prodTable,
+                    join,
+                    nullTest,
+                    nullProd,
+                    diffCondition,
+                    orderBy
+            );
+
+            return jdbcTemplate.queryForList(sql);
+        }
+
+        private TableDiffResponseDTO buildResponse(
+                String tableName,
+                List<Map<String, Object>> rows,
+                List<String> pkColumns,
+                List<String> compareColumns) {
+
+            List<RowDiffDTO> modified = new ArrayList<>();
+            List<RowDiffDTO> onlyTest = new ArrayList<>();
+            List<RowDiffDTO> onlyProd = new ArrayList<>();
+
+            for (Map<String, Object> row : rows) {
+
+                String status = (String) row.get("status");
+
+                Map<String, Object> pkMap = new LinkedHashMap<>();
+                for (String pk : pkColumns) {
+                    pkMap.put(pk, row.get("pk_" + pk));
+                }
+
+                RowDiffDTO dto = new RowDiffDTO();
+                dto.primaryKey = pkMap;
+                dto.status = status;
+
+                if ("DIFFERENT".equals(status)) {
+
+                    List<ColumnDiffDTO> diffs = new ArrayList<>();
+
+                    for (String col : compareColumns) {
+                        Object tVal = row.get("t_" + col);
+                        Object pVal = row.get("p_" + col);
+
+                        if (!Objects.equals(tVal, pVal)) {
+                            ColumnDiffDTO cd = new ColumnDiffDTO();
+                            cd.columnName = col;
+                            cd.testValue = tVal;
+                            cd.prodValue = pVal;
+                            diffs.add(cd);
+                        }
+                    }
+
+                    dto.changedColumns = diffs;
+                    modified.add(dto);
+                }
+                else if ("ONLY_IN_TEST".equals(status)) {
+                    onlyTest.add(dto);
+                }
+                else if ("ONLY_IN_PROD".equals(status)) {
+                    onlyProd.add(dto);
+                }
+            }
+
+            DiffSummaryDTO summary = new DiffSummaryDTO();
+            summary.different = modified.size();
+            summary.onlyInTest = onlyTest.size();
+            summary.onlyInProd = onlyProd.size();
+
+            TableDiffResponseDTO response = new TableDiffResponseDTO();
+            response.tableName = tableName;
+            response.summary = summary;
+            response.modifiedRows = modified;
+            response.onlyInTestRows = onlyTest;
+            response.onlyInProdRows = onlyProd;
+
+            return response;
+        }
+
+        public void writeCsv(TableDiffResponseDTO diff, PrintWriter writer) {
+
+            writer.println("pk,status,column_name,test_value,prod_value");
+
+            for (RowDiffDTO row : diff.modifiedRows) {
+
+                String pk = row.primaryKey.values()
+                        .stream().map(String::valueOf)
+                        .collect(Collectors.joining("|"));
+
+                for (ColumnDiffDTO col : row.changedColumns) {
+                    writer.printf("%s,DIFFERENT,%s,%s,%s%n",
+                            pk,
+                            col.columnName,
+                            safe(col.testValue),
+                            safe(col.prodValue));
+                }
+            }
+
+            for (RowDiffDTO row : diff.onlyInTestRows) {
+                String pk = row.primaryKey.values()
+                        .stream().map(String::valueOf)
+                        .collect(Collectors.joining("|"));
+                writer.printf("%s,ONLY_IN_TEST,,,%n", pk);
+            }
+
+            for (RowDiffDTO row : diff.onlyInProdRows) {
+                String pk = row.primaryKey.values()
+                        .stream().map(String::valueOf)
+                        .collect(Collectors.joining("|"));
+                writer.printf("%s,ONLY_IN_PROD,,,%n", pk);
+            }
+
+            writer.flush();
+        }
+
+        private String safe(Object val) {
+            if (val == null) return "";
+            String s = val.toString();
+            if (s.contains(",") || s.contains("\"")) {
+                s = "\"" + s.replace("\"", "\"\"") + "\"";
+            }
+            return s;
+        }
+    }
+
+    // ================= DTOs =================
+
+    public static class CompareRequest {
+        public List<String> includeColumns;
+        public List<String> excludeColumns;
+        public List<String> fallbackKeys;
+    }
+
+    public static class ColumnDiffDTO {
+        public String columnName;
+        public Object testValue;
+        public Object prodValue;
+    }
+
+    public static class RowDiffDTO {
+        public Map<String, Object> primaryKey;
+        public String status;
+        public List<ColumnDiffDTO> changedColumns;
+    }
+
+    public static class DiffSummaryDTO {
+        public long totalTestRows;
+        public long totalProdRows;
+        public long matched;
+        public long different;
+        public long onlyInTest;
+        public long onlyInProd;
+    }
+
+    public static class TableDiffResponseDTO {
+        public String tableName;
+        public DiffSummaryDTO summary;
+        public List<RowDiffDTO> modifiedRows;
+        public List<RowDiffDTO> onlyInTestRows;
+        public List<RowDiffDTO> onlyInProdRows;
+    }
+}
