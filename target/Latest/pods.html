@@ -5,33 +5,16 @@
 <link rel="stylesheet"
  href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
 
-<style>
-body{
-background:linear-gradient(135deg,#0f2027,#2c5364,#00c9a7);
-color:white;
-display:flex;
-justify-content:center;
-align-items:center;
-height:100vh;
-}
-.glass{
-background:rgba(255,255,255,.08);
-backdrop-filter:blur(12px);
-padding:40px;
-border-radius:12px;
-width:400px;
-}
-</style>
-
 </head>
 
-<body>
+<body style="background:#0f2027;color:white;
+display:flex;align-items:center;justify-content:center;height:100vh;">
 
-<div class="glass text-center">
+<div style="width:400px">
 
 <h4>Comparing Tables...</h4>
 
-<div class="progress mt-4">
+<div class="progress mt-3">
 <div id="bar"
  class="progress-bar progress-bar-striped progress-bar-animated"
  style="width:0%">0%</div>
@@ -55,9 +38,8 @@ bar.style.width=data.progress+"%";
 bar.innerText=data.progress+"%";
 
 if(data.status==="DONE"){
- window.location="/compare/view?cacheId="+data.cacheId;
-}
-else{
+ window.location="/compare/result?cacheId="+data.cacheId;
+}else{
  setTimeout(poll,1000);
 }
 });
