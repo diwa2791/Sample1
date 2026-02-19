@@ -1,361 +1,275 @@
-package com.example.tablecompare;
+package com.example.compare;
 
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.web.bind.annotation.*;
-import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.stereotype.Controller;
 import org.springframework.stereotype.Service;
+import org.springframework.ui.Model;
+import org.springframework.web.bind.annotation.*;
 
-import java.io.IOException;
-import java.io.PrintWriter;
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.concurrent.ConcurrentHashMap;
 
-@SpringBootApplication
-public class TableCompareApplication {
+@EnableAsync
+@Controller
+@RequestMapping("/compare")
+public class TableCompareAsyncModule {
 
-    public static void main(String[] args) {
-        SpringApplication.run(TableCompareApplication.class, args);
+    private final CompareService service;
+
+    public TableCompareAsyncModule(CompareService service) {
+        this.service = service;
     }
 
-    // ================= CONTROLLER =================
+    /* ================= PAGE ================= */
 
-    @RestController
-    @RequestMapping("/api/compare")
-    public static class CompareController {
-
-        private final TableCompareService service;
-
-        public CompareController(TableCompareService service) {
-            this.service = service;
-        }
-
-        @PostMapping("/{tableName}")
-        public TableDiffResponseDTO compare(
-                @PathVariable String tableName,
-                @RequestBody(required = false) CompareRequest request) {
-
-            if (request == null) request = new CompareRequest();
-
-            return service.compareTable(
-                    tableName,
-                    request.includeColumns,
-                    request.excludeColumns,
-                    request.fallbackKeys);
-        }
-
-        @PostMapping("/{tableName}/export")
-        public void export(
-                @PathVariable String tableName,
-                @RequestBody(required = false) CompareRequest request,
-                HttpServletResponse response) throws IOException {
-
-            if (request == null) request = new CompareRequest();
-
-            TableDiffResponseDTO diff = service.compareTable(
-                    tableName,
-                    request.includeColumns,
-                    request.excludeColumns,
-                    request.fallbackKeys);
-
-            response.setContentType("text/csv");
-            response.setHeader("Content-Disposition",
-                    "attachment; filename=" + tableName + "_diff.csv");
-
-            service.writeCsv(diff, response.getWriter());
-        }
+    @GetMapping
+    public String page() {
+        return "compare";
     }
 
-    // ================= SERVICE =================
+    /* ================= START JOB ================= */
 
-    @Service
-    public static class TableCompareService {
+    @PostMapping("/start")
+    public String start(CompareRequest req, Model model) {
 
-        private final JdbcTemplate jdbcTemplate;
+        String jobId = service.startAsyncComparison(req);
 
-        public TableCompareService(JdbcTemplate jdbcTemplate) {
-            this.jdbcTemplate = jdbcTemplate;
-        }
+        model.addAttribute("jobId", jobId);
+        return "progress";
+    }
 
-        public TableDiffResponseDTO compareTable(
-                String tableName,
-                List<String> includeColumns,
-                List<String> excludeColumns,
-                List<String> fallbackKeys) {
+    /* ================= PROGRESS API ================= */
 
-            String prodTable = tableName + "1";
+    @GetMapping("/progress/{jobId}")
+    @ResponseBody
+    public JobStatus progress(@PathVariable String jobId) {
+        return service.getStatus(jobId);
+    }
 
-            List<String> pkColumns = fetchPrimaryKeys(tableName);
+    /* ================= VIEW RESULT ================= */
 
-            if (pkColumns.isEmpty()) {
-                if (fallbackKeys == null || fallbackKeys.isEmpty()) {
-                    throw new RuntimeException("No primary key found. Provide fallback keys.");
-                }
-                pkColumns = fallbackKeys;
-            }
+    @GetMapping("/view")
+    public String view(
+            String cacheId,
+            @RequestParam(defaultValue = "modified") String type,
+            @RequestParam(defaultValue = "0") int page,
+            Model model) {
 
-            List<String> allColumns = fetchAllColumns(tableName);
+        model.addAttribute("data",
+                service.getPage(cacheId, type, page));
 
-            List<String> compareColumns =
-                    resolveCompareColumns(allColumns, includeColumns, excludeColumns, pkColumns);
+        return "compare";
+    }
+}
 
-            List<Map<String, Object>> rows =
-                    executeDiffQuery(tableName, prodTable, pkColumns, compareColumns);
+/* ==========================================================
+   SERVICE
+   ========================================================== */
 
-            return buildResponse(tableName, rows, pkColumns, compareColumns);
-        }
+@Service
+class CompareService {
 
-        private List<String> fetchPrimaryKeys(String tableName) {
-            String sql = """
-                SELECT kcu.column_name
-                FROM information_schema.table_constraints tc
-                JOIN information_schema.key_column_usage kcu
-                  ON tc.constraint_name = kcu.constraint_name
-                WHERE tc.constraint_type = 'PRIMARY KEY'
-                  AND tc.table_name = ?
-                ORDER BY kcu.ordinal_position
-            """;
-            return jdbcTemplate.queryForList(sql, String.class, tableName);
-        }
+    private static final int PAGE_SIZE = 1000;
+    private static final long TTL = 15 * 60 * 1000;
 
-        private List<String> fetchAllColumns(String tableName) {
-            String sql = """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_name = ?
-                ORDER BY ordinal_position
-            """;
-            return jdbcTemplate.queryForList(sql, String.class, tableName);
-        }
+    private final Map<String, CachedResult> resultCache = new ConcurrentHashMap<>();
+    private final Map<String, JobStatus> jobs = new ConcurrentHashMap<>();
 
-        private List<String> resolveCompareColumns(
-                List<String> allColumns,
-                List<String> include,
-                List<String> exclude,
-                List<String> pkColumns) {
+    /* ================= START ASYNC ================= */
 
-            Set<String> result = (include != null && !include.isEmpty())
-                    ? new HashSet<>(include)
-                    : new HashSet<>(allColumns);
+    public String startAsyncComparison(CompareRequest req) {
 
-            if (exclude != null) result.removeAll(exclude);
+        String jobId = UUID.randomUUID().toString();
 
-            result.removeAll(pkColumns);
+        jobs.put(jobId, new JobStatus("RUNNING", 0, null));
 
-            return new ArrayList<>(result);
-        }
+        runComparisonAsync(jobId, req);
 
-        private List<Map<String, Object>> executeDiffQuery(
-                String testTable,
-                String prodTable,
-                List<String> pkColumns,
-                List<String> compareColumns) {
+        return jobId;
+    }
 
-            String join = pkColumns.stream()
-                    .map(pk -> "t." + pk + " = p." + pk)
-                    .collect(Collectors.joining(" AND "));
+    /* ================= ASYNC JOB ================= */
 
-            String diffCondition = compareColumns.stream()
-                    .map(col -> "t." + col + " IS DISTINCT FROM p." + col)
-                    .collect(Collectors.joining(" OR "));
+    @Async
+    public void runComparisonAsync(String jobId, CompareRequest req) {
 
-            String nullTest = pkColumns.stream()
-                    .map(pk -> "t." + pk + " IS NULL")
-                    .collect(Collectors.joining(" AND "));
+        try {
 
-            String nullProd = pkColumns.stream()
-                    .map(pk -> "p." + pk + " IS NULL")
-                    .collect(Collectors.joining(" AND "));
+            // simulate steps
+            update(jobId, 10);
 
-            String selectPK = pkColumns.stream()
-                    .map(pk -> "COALESCE(t." + pk + ", p." + pk + ") AS pk_" + pk)
-                    .collect(Collectors.joining(", "));
+            Thread.sleep(1000);
 
-            String selectCols = compareColumns.stream()
-                    .map(col -> "t." + col + " AS t_" + col + ", p." + col + " AS p_" + col)
-                    .collect(Collectors.joining(", "));
+            update(jobId, 30);
 
-            String orderBy = pkColumns.stream()
-                    .map(pk -> "pk_" + pk)
-                    .collect(Collectors.joining(", "));
+            Thread.sleep(1000);
 
-            String sql = """
-                SELECT %s, %s,
-                CASE
-                    WHEN %s THEN 'ONLY_IN_PROD'
-                    WHEN %s THEN 'ONLY_IN_TEST'
-                    WHEN (%s) THEN 'DIFFERENT'
-                END AS status
-                FROM %s t
-                FULL OUTER JOIN %s p
-                ON %s
-                WHERE %s OR %s OR (%s)
-                ORDER BY %s
-            """.formatted(
-                    selectPK,
-                    selectCols,
-                    nullTest,
-                    nullProd,
-                    diffCondition,
-                    testTable,
-                    prodTable,
-                    join,
-                    nullTest,
-                    nullProd,
-                    diffCondition,
-                    orderBy
-            );
+            update(jobId, 60);
 
-            return jdbcTemplate.queryForList(sql);
-        }
+            // 🔥 Replace with REAL SQL comparison
+            TableDiffResult result = mockDiff();
 
-        private TableDiffResponseDTO buildResponse(
-                String tableName,
-                List<Map<String, Object>> rows,
-                List<String> pkColumns,
-                List<String> compareColumns) {
+            update(jobId, 90);
 
-            List<RowDiffDTO> modified = new ArrayList<>();
-            List<RowDiffDTO> onlyTest = new ArrayList<>();
-            List<RowDiffDTO> onlyProd = new ArrayList<>();
+            String cacheId = UUID.randomUUID().toString();
+            resultCache.put(cacheId, new CachedResult(result));
 
-            for (Map<String, Object> row : rows) {
+            jobs.put(jobId,
+                    new JobStatus("DONE", 100, cacheId));
 
-                String status = (String) row.get("status");
-
-                Map<String, Object> pkMap = new LinkedHashMap<>();
-                for (String pk : pkColumns) {
-                    pkMap.put(pk, row.get("pk_" + pk));
-                }
-
-                RowDiffDTO dto = new RowDiffDTO();
-                dto.primaryKey = pkMap;
-                dto.status = status;
-
-                if ("DIFFERENT".equals(status)) {
-
-                    List<ColumnDiffDTO> diffs = new ArrayList<>();
-
-                    for (String col : compareColumns) {
-                        Object tVal = row.get("t_" + col);
-                        Object pVal = row.get("p_" + col);
-
-                        if (!Objects.equals(tVal, pVal)) {
-                            ColumnDiffDTO cd = new ColumnDiffDTO();
-                            cd.columnName = col;
-                            cd.testValue = tVal;
-                            cd.prodValue = pVal;
-                            diffs.add(cd);
-                        }
-                    }
-
-                    dto.changedColumns = diffs;
-                    modified.add(dto);
-                }
-                else if ("ONLY_IN_TEST".equals(status)) {
-                    onlyTest.add(dto);
-                }
-                else if ("ONLY_IN_PROD".equals(status)) {
-                    onlyProd.add(dto);
-                }
-            }
-
-            DiffSummaryDTO summary = new DiffSummaryDTO();
-            summary.different = modified.size();
-            summary.onlyInTest = onlyTest.size();
-            summary.onlyInProd = onlyProd.size();
-
-            TableDiffResponseDTO response = new TableDiffResponseDTO();
-            response.tableName = tableName;
-            response.summary = summary;
-            response.modifiedRows = modified;
-            response.onlyInTestRows = onlyTest;
-            response.onlyInProdRows = onlyProd;
-
-            return response;
-        }
-
-        public void writeCsv(TableDiffResponseDTO diff, PrintWriter writer) {
-
-            writer.println("pk,status,column_name,test_value,prod_value");
-
-            for (RowDiffDTO row : diff.modifiedRows) {
-
-                String pk = row.primaryKey.values()
-                        .stream().map(String::valueOf)
-                        .collect(Collectors.joining("|"));
-
-                for (ColumnDiffDTO col : row.changedColumns) {
-                    writer.printf("%s,DIFFERENT,%s,%s,%s%n",
-                            pk,
-                            col.columnName,
-                            safe(col.testValue),
-                            safe(col.prodValue));
-                }
-            }
-
-            for (RowDiffDTO row : diff.onlyInTestRows) {
-                String pk = row.primaryKey.values()
-                        .stream().map(String::valueOf)
-                        .collect(Collectors.joining("|"));
-                writer.printf("%s,ONLY_IN_TEST,,,%n", pk);
-            }
-
-            for (RowDiffDTO row : diff.onlyInProdRows) {
-                String pk = row.primaryKey.values()
-                        .stream().map(String::valueOf)
-                        .collect(Collectors.joining("|"));
-                writer.printf("%s,ONLY_IN_PROD,,,%n", pk);
-            }
-
-            writer.flush();
-        }
-
-        private String safe(Object val) {
-            if (val == null) return "";
-            String s = val.toString();
-            if (s.contains(",") || s.contains("\"")) {
-                s = "\"" + s.replace("\"", "\"\"") + "\"";
-            }
-            return s;
+        } catch (Exception e) {
+            jobs.put(jobId,
+                    new JobStatus("FAILED", 0, null));
         }
     }
 
-    // ================= DTOs =================
-
-    public static class CompareRequest {
-        public List<String> includeColumns;
-        public List<String> excludeColumns;
-        public List<String> fallbackKeys;
+    private void update(String id, int progress) {
+        jobs.put(id,
+                new JobStatus("RUNNING", progress, null));
     }
 
-    public static class ColumnDiffDTO {
-        public String columnName;
-        public Object testValue;
-        public Object prodValue;
+    /* ================= STATUS ================= */
+
+    public JobStatus getStatus(String jobId) {
+        return jobs.get(jobId);
     }
 
-    public static class RowDiffDTO {
-        public Map<String, Object> primaryKey;
-        public String status;
-        public List<ColumnDiffDTO> changedColumns;
+    /* ================= PAGINATION ================= */
+
+    public PagedResponse getPage(String cacheId, String type, int page) {
+
+        cleanup();
+
+        TableDiffResult data = resultCache.get(cacheId).data;
+
+        List<RowDiff> source =
+                switch (type) {
+                    case "modified" -> data.modified;
+                    case "test" -> data.onlyTest;
+                    case "prod" -> data.onlyProd;
+                    default -> List.of();
+                };
+
+        int start = page * PAGE_SIZE;
+        int end = Math.min(start + PAGE_SIZE, source.size());
+
+        return new PagedResponse(
+                cacheId,
+                type,
+                page,
+                PAGE_SIZE,
+                source.size(),
+                source.subList(start, end),
+                data.summary
+        );
     }
 
-    public static class DiffSummaryDTO {
-        public long totalTestRows;
-        public long totalProdRows;
-        public long matched;
-        public long different;
-        public long onlyInTest;
-        public long onlyInProd;
+    private void cleanup() {
+        long now = System.currentTimeMillis();
+        resultCache.entrySet()
+                .removeIf(e -> now - e.getValue().createdAt > TTL);
     }
 
-    public static class TableDiffResponseDTO {
-        public String tableName;
-        public DiffSummaryDTO summary;
-        public List<RowDiffDTO> modifiedRows;
-        public List<RowDiffDTO> onlyInTestRows;
-        public List<RowDiffDTO> onlyInProdRows;
+    /* ================= MOCK DATA ================= */
+
+    private TableDiffResult mockDiff() {
+
+        List<RowDiff> modified = new ArrayList<>();
+
+        for (int i = 1; i <= 5000; i++) {
+            modified.add(
+                    RowDiff.modified(
+                            Map.of("id", i),
+                            List.of(new ColumnDiff("salary", 100, 200))
+                    ));
+        }
+
+        return new TableDiffResult(
+                modified,
+                List.of(),
+                List.of(),
+                new Summary(5000,0,0)
+        );
+    }
+}
+
+/* ==========================================================
+   CACHE
+   ========================================================== */
+
+class CachedResult {
+    TableDiffResult data;
+    long createdAt = System.currentTimeMillis();
+    CachedResult(TableDiffResult d){data=d;}
+}
+
+/* ==========================================================
+   DTOs
+   ========================================================== */
+
+class CompareRequest {
+    private String tableName;
+    public String getTableName(){return tableName;}
+    public void setTableName(String t){tableName=t;}
+}
+
+class JobStatus {
+    public String status;
+    public int progress;
+    public String cacheId;
+
+    JobStatus(String s,int p,String c){
+        status=s;progress=p;cacheId=c;
+    }
+}
+
+class PagedResponse {
+    public String cacheId,type;
+    public int page,pageSize,totalRows;
+    public List<RowDiff> rows;
+    public Summary summary;
+
+    PagedResponse(String id,String t,int p,int ps,int total,
+                  List<RowDiff> r,Summary s){
+        cacheId=id;type=t;page=p;
+        pageSize=ps;totalRows=total;rows=r;summary=s;
+    }
+}
+
+class TableDiffResult {
+    List<RowDiff> modified,onlyTest,onlyProd;
+    Summary summary;
+
+    TableDiffResult(List<RowDiff> m,List<RowDiff> t,
+                    List<RowDiff> p,Summary s){
+        modified=m;onlyTest=t;onlyProd=p;summary=s;
+    }
+}
+
+class RowDiff {
+    Map<String,Object> primaryKey;
+    List<ColumnDiff> changedColumns;
+
+    static RowDiff modified(Map<String,Object> pk,List<ColumnDiff> c){
+        RowDiff r=new RowDiff();
+        r.primaryKey=pk;
+        r.changedColumns=c;
+        return r;
+    }
+}
+
+class ColumnDiff {
+    public String columnName;
+    public Object testValue,prodValue;
+    ColumnDiff(String c,Object t,Object p){
+        columnName=c;testValue=t;prodValue=p;
+    }
+}
+
+class Summary {
+    public long different,onlyTest,onlyProd;
+    Summary(long d,long t,long p){
+        different=d;onlyTest=t;onlyProd=p;
     }
 }
