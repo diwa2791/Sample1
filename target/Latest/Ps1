@@ -1,275 +1,247 @@
-package com.example.compare;
+package com.example.tablecompare;
 
-import org.springframework.scheduling.annotation.Async;
-import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Controller;
 import org.springframework.stereotype.Service;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.scheduling.annotation.EnableAsync;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
+@SpringBootApplication
 @EnableAsync
-@Controller
-@RequestMapping("/compare")
-public class TableCompareAsyncModule {
+public class TableCompareApplication {
 
-    private final CompareService service;
-
-    public TableCompareAsyncModule(CompareService service) {
-        this.service = service;
+    public static void main(String[] args) {
+        SpringApplication.run(TableCompareApplication.class, args);
     }
 
-    /* ================= PAGE ================= */
+    /* ======================================================
+       CONTROLLER (MVC — aligned with your HTML)
+       ====================================================== */
 
-    @GetMapping
-    public String page() {
-        return "compare";
-    }
+    @Controller
+    @RequestMapping("/compare")
+    public static class CompareController {
 
-    /* ================= START JOB ================= */
+        private final TableCompareService service;
 
-    @PostMapping("/start")
-    public String start(CompareRequest req, Model model) {
+        public CompareController(TableCompareService service) {
+            this.service = service;
+        }
 
-        String jobId = service.startAsyncComparison(req);
+        @GetMapping
+        public String page(Model model) {
+            model.addAttribute("request", new CompareRequest());
+            return "compare";
+        }
 
-        model.addAttribute("jobId", jobId);
-        return "progress";
-    }
+        /* START ASYNC JOB */
+        @PostMapping
+        public String start(@ModelAttribute CompareRequest request,
+                            Model model) {
 
-    /* ================= PROGRESS API ================= */
+            String jobId = service.startAsyncCompare(request.tableName);
 
-    @GetMapping("/progress/{jobId}")
-    @ResponseBody
-    public JobStatus progress(@PathVariable String jobId) {
-        return service.getStatus(jobId);
-    }
+            model.addAttribute("jobId", jobId);
+            return "progress";
+        }
 
-    /* ================= VIEW RESULT ================= */
+        /* PROGRESS API */
+        @GetMapping("/progress/{jobId}")
+        @ResponseBody
+        public JobStatus progress(@PathVariable String jobId) {
+            return service.getStatus(jobId);
+        }
 
-    @GetMapping("/view")
-    public String view(
-            String cacheId,
-            @RequestParam(defaultValue = "modified") String type,
-            @RequestParam(defaultValue = "0") int page,
-            Model model) {
+        /* SHOW RESULT */
+        @GetMapping("/result")
+        public String result(String cacheId, Model model) {
 
-        model.addAttribute("data",
-                service.getPage(cacheId, type, page));
+            TableDiffResponseDTO diff =
+                    service.getResult(cacheId);
 
-        return "compare";
-    }
-}
+            model.addAttribute("diff", diff);
+            model.addAttribute("request", new CompareRequest());
 
-/* ==========================================================
-   SERVICE
-   ========================================================== */
-
-@Service
-class CompareService {
-
-    private static final int PAGE_SIZE = 1000;
-    private static final long TTL = 15 * 60 * 1000;
-
-    private final Map<String, CachedResult> resultCache = new ConcurrentHashMap<>();
-    private final Map<String, JobStatus> jobs = new ConcurrentHashMap<>();
-
-    /* ================= START ASYNC ================= */
-
-    public String startAsyncComparison(CompareRequest req) {
-
-        String jobId = UUID.randomUUID().toString();
-
-        jobs.put(jobId, new JobStatus("RUNNING", 0, null));
-
-        runComparisonAsync(jobId, req);
-
-        return jobId;
-    }
-
-    /* ================= ASYNC JOB ================= */
-
-    @Async
-    public void runComparisonAsync(String jobId, CompareRequest req) {
-
-        try {
-
-            // simulate steps
-            update(jobId, 10);
-
-            Thread.sleep(1000);
-
-            update(jobId, 30);
-
-            Thread.sleep(1000);
-
-            update(jobId, 60);
-
-            // 🔥 Replace with REAL SQL comparison
-            TableDiffResult result = mockDiff();
-
-            update(jobId, 90);
-
-            String cacheId = UUID.randomUUID().toString();
-            resultCache.put(cacheId, new CachedResult(result));
-
-            jobs.put(jobId,
-                    new JobStatus("DONE", 100, cacheId));
-
-        } catch (Exception e) {
-            jobs.put(jobId,
-                    new JobStatus("FAILED", 0, null));
+            return "compare";
         }
     }
 
-    private void update(String id, int progress) {
-        jobs.put(id,
-                new JobStatus("RUNNING", progress, null));
-    }
+    /* ======================================================
+       SERVICE
+       ====================================================== */
 
-    /* ================= STATUS ================= */
+    @Service
+    public static class TableCompareService {
 
-    public JobStatus getStatus(String jobId) {
-        return jobs.get(jobId);
-    }
+        private final JdbcTemplate jdbcTemplate;
 
-    /* ================= PAGINATION ================= */
-
-    public PagedResponse getPage(String cacheId, String type, int page) {
-
-        cleanup();
-
-        TableDiffResult data = resultCache.get(cacheId).data;
-
-        List<RowDiff> source =
-                switch (type) {
-                    case "modified" -> data.modified;
-                    case "test" -> data.onlyTest;
-                    case "prod" -> data.onlyProd;
-                    default -> List.of();
-                };
-
-        int start = page * PAGE_SIZE;
-        int end = Math.min(start + PAGE_SIZE, source.size());
-
-        return new PagedResponse(
-                cacheId,
-                type,
-                page,
-                PAGE_SIZE,
-                source.size(),
-                source.subList(start, end),
-                data.summary
-        );
-    }
-
-    private void cleanup() {
-        long now = System.currentTimeMillis();
-        resultCache.entrySet()
-                .removeIf(e -> now - e.getValue().createdAt > TTL);
-    }
-
-    /* ================= MOCK DATA ================= */
-
-    private TableDiffResult mockDiff() {
-
-        List<RowDiff> modified = new ArrayList<>();
-
-        for (int i = 1; i <= 5000; i++) {
-            modified.add(
-                    RowDiff.modified(
-                            Map.of("id", i),
-                            List.of(new ColumnDiff("salary", 100, 200))
-                    ));
+        public TableCompareService(JdbcTemplate jdbcTemplate) {
+            this.jdbcTemplate = jdbcTemplate;
         }
 
-        return new TableDiffResult(
-                modified,
-                List.of(),
-                List.of(),
-                new Summary(5000,0,0)
-        );
+        /* CACHE */
+        private final Map<String, CachedResult> cache =
+                new ConcurrentHashMap<>();
+
+        private final Map<String, JobStatus> jobs =
+                new ConcurrentHashMap<>();
+
+        private static final long TTL = 15 * 60 * 1000;
+
+        /* ================= START ================= */
+
+        public String startAsyncCompare(String tableName) {
+
+            String jobId = UUID.randomUUID().toString();
+
+            jobs.put(jobId, new JobStatus("RUNNING", 0, null));
+
+            runAsync(jobId, tableName);
+
+            return jobId;
+        }
+
+        /* ================= ASYNC JOB ================= */
+
+        @Async
+        public void runAsync(String jobId, String tableName) {
+
+            try {
+
+                update(jobId, 20);
+
+                TableDiffResponseDTO result =
+                        compareTable(tableName);
+
+                update(jobId, 80);
+
+                String cacheId = UUID.randomUUID().toString();
+
+                cache.put(cacheId, new CachedResult(result));
+
+                jobs.put(jobId,
+                        new JobStatus("DONE", 100, cacheId));
+
+            } catch (Exception e) {
+                jobs.put(jobId,
+                        new JobStatus("FAILED", 0, null));
+            }
+        }
+
+        private void update(String jobId, int progress) {
+            jobs.put(jobId,
+                    new JobStatus("RUNNING", progress, null));
+        }
+
+        public JobStatus getStatus(String id) {
+            return jobs.get(id);
+        }
+
+        public TableDiffResponseDTO getResult(String cacheId) {
+            cleanup();
+            return cache.get(cacheId).data;
+        }
+
+        private void cleanup() {
+            long now = System.currentTimeMillis();
+            cache.entrySet().removeIf(e ->
+                    now - e.getValue().createdAt > TTL);
+        }
+
+        /* ==================================================
+           YOUR ORIGINAL COMPARE LOGIC (UNCHANGED)
+           ================================================== */
+
+        public TableDiffResponseDTO compareTable(String tableName) {
+
+            // 🔥 keep your existing SQL implementation here
+            // returning mock for now
+
+            TableDiffResponseDTO dto = new TableDiffResponseDTO();
+            dto.tableName = tableName;
+
+            dto.summary = new DiffSummaryDTO();
+            dto.summary.different = 2;
+
+            dto.modifiedRows = new ArrayList<>();
+
+            RowDiffDTO r = new RowDiffDTO();
+            r.primaryKey = Map.of("id", 1);
+            r.changedColumns = List.of(
+                    new ColumnDiffDTO("salary", 100, 200)
+            );
+
+            dto.modifiedRows.add(r);
+
+            dto.onlyInTestRows = List.of();
+            dto.onlyInProdRows = List.of();
+
+            return dto;
+        }
     }
-}
 
-/* ==========================================================
-   CACHE
-   ========================================================== */
+    /* ======================================================
+       CACHE + DTO
+       ====================================================== */
 
-class CachedResult {
-    TableDiffResult data;
-    long createdAt = System.currentTimeMillis();
-    CachedResult(TableDiffResult d){data=d;}
-}
-
-/* ==========================================================
-   DTOs
-   ========================================================== */
-
-class CompareRequest {
-    private String tableName;
-    public String getTableName(){return tableName;}
-    public void setTableName(String t){tableName=t;}
-}
-
-class JobStatus {
-    public String status;
-    public int progress;
-    public String cacheId;
-
-    JobStatus(String s,int p,String c){
-        status=s;progress=p;cacheId=c;
+    static class CachedResult {
+        TableDiffResponseDTO data;
+        long createdAt = System.currentTimeMillis();
+        CachedResult(TableDiffResponseDTO d){data=d;}
     }
-}
 
-class PagedResponse {
-    public String cacheId,type;
-    public int page,pageSize,totalRows;
-    public List<RowDiff> rows;
-    public Summary summary;
+    static class JobStatus {
+        public String status;
+        public int progress;
+        public String cacheId;
 
-    PagedResponse(String id,String t,int p,int ps,int total,
-                  List<RowDiff> r,Summary s){
-        cacheId=id;type=t;page=p;
-        pageSize=ps;totalRows=total;rows=r;summary=s;
+        JobStatus(String s,int p,String c){
+            status=s;progress=p;cacheId=c;
+        }
     }
-}
 
-class TableDiffResult {
-    List<RowDiff> modified,onlyTest,onlyProd;
-    Summary summary;
+    /* ================= DTOs ================= */
 
-    TableDiffResult(List<RowDiff> m,List<RowDiff> t,
-                    List<RowDiff> p,Summary s){
-        modified=m;onlyTest=t;onlyProd=p;summary=s;
+    public static class CompareRequest {
+        public String tableName;
     }
-}
 
-class RowDiff {
-    Map<String,Object> primaryKey;
-    List<ColumnDiff> changedColumns;
+    public static class ColumnDiffDTO {
+        public String columnName;
+        public Object testValue;
+        public Object prodValue;
 
-    static RowDiff modified(Map<String,Object> pk,List<ColumnDiff> c){
-        RowDiff r=new RowDiff();
-        r.primaryKey=pk;
-        r.changedColumns=c;
-        return r;
+        ColumnDiffDTO(){}
+        ColumnDiffDTO(String c,Object t,Object p){
+            columnName=c;testValue=t;prodValue=p;
+        }
     }
-}
 
-class ColumnDiff {
-    public String columnName;
-    public Object testValue,prodValue;
-    ColumnDiff(String c,Object t,Object p){
-        columnName=c;testValue=t;prodValue=p;
+    public static class RowDiffDTO {
+        public Map<String,Object> primaryKey;
+        public List<ColumnDiffDTO> changedColumns;
+        public Map<String,Object> testRow;
+        public Map<String,Object> prodRow;
     }
-}
 
-class Summary {
-    public long different,onlyTest,onlyProd;
-    Summary(long d,long t,long p){
-        different=d;onlyTest=t;onlyProd=p;
+    public static class DiffSummaryDTO {
+        public long different;
+        public long onlyInTest;
+        public long onlyInProd;
+    }
+
+    public static class TableDiffResponseDTO {
+        public String tableName;
+        public DiffSummaryDTO summary;
+        public List<RowDiffDTO> modifiedRows;
+        public List<RowDiffDTO> onlyInTestRows;
+        public List<RowDiffDTO> onlyInProdRows;
     }
 }
