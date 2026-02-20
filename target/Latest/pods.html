@@ -1,90 +1,102 @@
-public class TextDiffUtil {
+public class DiffHighlighter {
 
-    public static String highlightDiff(String a, String b, boolean isProd) {
+    private static final int CHAR_DIFF_LIMIT = 800;
 
-        if (a == null) a = "";
-        if (b == null) b = "";
+    public static String[] highlight(String test, String prod) {
 
-        int[][] lcs = buildLCS(a, b);
+        if (test == null) test = "";
+        if (prod == null) prod = "";
 
-        StringBuilder result = new StringBuilder();
+        // SAFETY SWITCH
+        if (test.length() > CHAR_DIFF_LIMIT ||
+            prod.length() > CHAR_DIFF_LIMIT) {
 
-        buildHighlighted(a, b, a.length(), b.length(), lcs, result, isProd);
-
-        return result.toString();
-    }
-
-    private static int[][] buildLCS(String a, String b) {
-        int[][] dp = new int[a.length()+1][b.length()+1];
-
-        for (int i=1;i<=a.length();i++) {
-            for (int j=1;j<=b.length();j++) {
-                if (a.charAt(i-1)==b.charAt(j-1))
-                    dp[i][j]=dp[i-1][j-1]+1;
-                else
-                    dp[i][j]=Math.max(dp[i-1][j], dp[i][j-1]);
-            }
+            return tokenDiff(test, prod);
         }
-        return dp;
+
+        return simpleCharDiff(test, prod);
     }
 
-    private static void buildHighlighted(
-            String a,
-            String b,
-            int i,
-            int j,
-            int[][] lcs,
-            StringBuilder out,
-            boolean isProd) {
+    ====================================================
 
-        if (i>0 && j>0 && a.charAt(i-1)==b.charAt(j-1)) {
+    private static String[] tokenDiff(String a, String b) {
 
-            buildHighlighted(a,b,i-1,j-1,lcs,out,isProd);
-            out.append(escapeHtml(a.charAt(i-1)));
+    String[] ta = tokenize(a);
+    String[] tb = tokenize(b);
 
-        } else {
+    StringBuilder outA = new StringBuilder();
+    StringBuilder outB = new StringBuilder();
 
-            if (j>0 && (i==0 || lcs[i][j-1] >= lcs[i-1][j])) {
+    int max = Math.max(ta.length, tb.length);
 
-                buildHighlighted(a,b,i,j-1,lcs,out,isProd);
+    for(int i=0;i<max;i++){
 
-                if (isProd)
-                    out.append(wrap(b.charAt(j-1)));
+        String sa = i < ta.length ? ta[i] : "";
+        String sb = i < tb.length ? tb[i] : "";
 
-            } else if (i>0) {
-
-                buildHighlighted(a,b,i-1,j,lcs,out,isProd);
-
-                if (!isProd)
-                    out.append(wrap(a.charAt(i-1)));
-            }
+        if(sa.equals(sb)){
+            outA.append(escape(sa));
+            outB.append(escape(sb));
+        }else{
+            outA.append(wrap(sa));
+            outB.append(wrap(sb));
         }
     }
 
-    private static String wrap(char c) {
-        return "<span class='diff-change'>" + escapeHtml(c) + "</span>";
-    }
-
-    private static String escapeHtml(char c) {
-        switch (c) {
-            case '<': return "&lt;";
-            case '>': return "&gt;";
-            case '&': return "&amp;";
-            case '"': return "&quot;";
-            default: return String.valueOf(c);
-        }
-    }
+    return new String[]{
+            outA.toString(),
+            outB.toString()
+    };
 }
 
+=====================================================
 
+            private static String[] tokenize(String s){
 
-                ===========================
+    return s.split(
+        "(?=[(){}.,;=+\\-*/ ])|(?<=[(){}.,;=+\\-*/ ])"
+    );
+}
 
-                String test = String.valueOf(tVal);
-String prod = String.valueOf(pVal);
+=====================================================
+            private static String[] simpleCharDiff(String a, String b){
 
-cd.testHighlighted =
-        TextDiffUtil.highlightDiff(test, prod, false);
+    StringBuilder A = new StringBuilder();
+    StringBuilder B = new StringBuilder();
 
-cd.prodHighlighted =
-        TextDiffUtil.highlightDiff(test, prod, true);
+    int max = Math.max(a.length(), b.length());
+
+    for(int i=0;i<max;i++){
+
+        char ca = i<a.length()?a.charAt(i):0;
+        char cb = i<b.length()?b.charAt(i):0;
+
+        if(ca==cb){
+            if(ca!=0){
+                A.append(escape(ca));
+                B.append(escape(cb));
+            }
+        }else{
+            if(ca!=0) A.append(wrap(String.valueOf(ca)));
+            if(cb!=0) B.append(wrap(String.valueOf(cb)));
+        }
+    }
+
+    return new String[]{A.toString(),B.toString()};
+}
+
+===============================================================
+
+        private static String wrap(String s){
+    return "<span class='diff-change'>" + escape(s) + "</span>";
+}
+
+private static String escape(String s){
+    return s.replace("&","&amp;")
+            .replace("<","&lt;")
+            .replace(">","&gt;");
+}
+
+private static String escape(char c){
+    return escape(String.valueOf(c));
+}
