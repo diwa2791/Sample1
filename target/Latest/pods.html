@@ -75,3 +75,16 @@ public class TextDiffUtil {
         }
     }
 }
+
+
+
+                ===========================
+
+                String test = String.valueOf(tVal);
+String prod = String.valueOf(pVal);
+
+cd.testHighlighted =
+        TextDiffUtil.highlightDiff(test, prod, false);
+
+cd.prodHighlighted =
+        TextDiffUtil.highlightDiff(test, prod, true);
