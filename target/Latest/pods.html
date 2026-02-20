@@ -1,42 +1,77 @@
-import java.util.*;
+public class TextDiffUtil {
 
-public class DiffHighlighter {
+    public static String highlightDiff(String a, String b, boolean isProd) {
 
-    public static String highlight(String oldText, String newText) {
+        if (a == null) a = "";
+        if (b == null) b = "";
 
-        if(oldText == null) oldText = "";
-        if(newText == null) newText = "";
-
-        if(oldText.equals(newText))
-            return escape(oldText);
-
-        String[] oldTokens = oldText.split("(?<=\\W)|(?=\\W)");
-        String[] newTokens = newText.split("(?<=\\W)|(?=\\W)");
+        int[][] lcs = buildLCS(a, b);
 
         StringBuilder result = new StringBuilder();
 
-        int max = Math.max(oldTokens.length, newTokens.length);
-
-        for(int i=0;i<max;i++) {
-
-            String o = i < oldTokens.length ? oldTokens[i] : "";
-            String n = i < newTokens.length ? newTokens[i] : "";
-
-            if(!Objects.equals(o,n)) {
-                result.append("<span class='diff-change'>")
-                      .append(escape(o))
-                      .append("</span>");
-            } else {
-                result.append(escape(o));
-            }
-        }
+        buildHighlighted(a, b, a.length(), b.length(), lcs, result, isProd);
 
         return result.toString();
     }
 
-    private static String escape(String s){
-        return s.replace("&","&amp;")
-                .replace("<","&lt;")
-                .replace(">","&gt;");
+    private static int[][] buildLCS(String a, String b) {
+        int[][] dp = new int[a.length()+1][b.length()+1];
+
+        for (int i=1;i<=a.length();i++) {
+            for (int j=1;j<=b.length();j++) {
+                if (a.charAt(i-1)==b.charAt(j-1))
+                    dp[i][j]=dp[i-1][j-1]+1;
+                else
+                    dp[i][j]=Math.max(dp[i-1][j], dp[i][j-1]);
+            }
+        }
+        return dp;
+    }
+
+    private static void buildHighlighted(
+            String a,
+            String b,
+            int i,
+            int j,
+            int[][] lcs,
+            StringBuilder out,
+            boolean isProd) {
+
+        if (i>0 && j>0 && a.charAt(i-1)==b.charAt(j-1)) {
+
+            buildHighlighted(a,b,i-1,j-1,lcs,out,isProd);
+            out.append(escapeHtml(a.charAt(i-1)));
+
+        } else {
+
+            if (j>0 && (i==0 || lcs[i][j-1] >= lcs[i-1][j])) {
+
+                buildHighlighted(a,b,i,j-1,lcs,out,isProd);
+
+                if (isProd)
+                    out.append(wrap(b.charAt(j-1)));
+
+            } else if (i>0) {
+
+                buildHighlighted(a,b,i-1,j,lcs,out,isProd);
+
+                if (!isProd)
+                    out.append(wrap(a.charAt(i-1)));
+            }
+        }
+    }
+
+    private static String wrap(char c) {
+        return "<span class='diff-change'>" + escapeHtml(c) + "</span>";
+    }
+
+    private static String escapeHtml(char c) {
+        switch (c) {
+            case '<': return "&lt;";
+            case '>': return "&gt;";
+            case '&': return "&amp;";
+            case '"': return "&quot;";
+            default: return String.valueOf(c);
+        }
     }
 }
