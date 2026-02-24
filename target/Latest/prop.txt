@@ -1,131 +1,157 @@
-public List<Map<String, Object>> executeDiffQuery(
-        JdbcTemplate jdbc,
-        boolean isOracle,
-        List<String> ctrycds,
-        Integer version,
-        String pmttp,
-        String subpmttp,
-        String baseSql) {
+@Service
+public class TableCompareService {
 
-    List<String> extraConds = new ArrayList<>();
-    List<Object> params = new ArrayList<>();
+    private final NamedParameterJdbcTemplate namedJdbc;
 
-    // =========================
-    // COUNTRY FILTER
-    // =========================
-    if (ctrycds != null && !ctrycds.isEmpty()) {
-
-        String placeholders =
-                String.join(",", Collections.nCopies(ctrycds.size(), "?"));
-
-        String cond =
-                "(t.ctrycd IN (" + placeholders + ") " +
-                "OR p.ctrycd IN (" + placeholders + "))";
-
-        extraConds.add("(" + cond + ")");
-
-        params.addAll(ctrycds);
-        params.addAll(ctrycds);
+    public TableCompareService(DataSource dataSource) {
+        this.namedJdbc = new NamedParameterJdbcTemplate(dataSource);
     }
 
-    // =========================
-    // VERSION FILTER
-    // =========================
-    if (version != null) {
-        addCondition(
-                extraConds,
-                params,
-                "t.version = ? OR p.version = ?",
-                version, version
-        );
-    }
+    public List<Map<String, Object>> executeDiffQuery(
+            String testTable,
+            String prodTable,
+            List<String> pkColumns,
+            List<String> compareColumns,
+            List<String> ctrycds,
+            String version,
+            String pmttp,
+            String subpmttp,
+            boolean isOracle) {
 
-    // =========================
-    // PMTTP FILTER (NEW)
-    // =========================
-    if (pmttp != null && !pmttp.isBlank()) {
-        addCondition(
-                extraConds,
-                params,
-                "t.pmttp = ? OR p.pmttp = ?",
-                pmttp, pmttp
-        );
-    }
+        /* =========================
+           BUILD COLUMN SECTIONS
+         ========================= */
 
-    // =========================
-    // SUBPMTTP FILTER (NEW)
-    // =========================
-    if (subpmttp != null && !subpmttp.isBlank()) {
-        addCondition(
-                extraConds,
-                params,
-                "t.subpmttp = ? OR p.subpmttp = ?",
-                subpmttp, subpmttp
-        );
-    }
+        String join = pkColumns.stream()
+                .map(pk -> "t." + pk + " = p." + pk)
+                .collect(Collectors.joining(" AND "));
 
-    // =========================
-    // WHERE CLAUSE
-    // =========================
-    String where =
-            extraConds.isEmpty()
-                    ? ""
-                    : " WHERE " + String.join(" AND ", extraConds);
+        String diffCondition = compareColumns.stream()
+                .map(col -> isOracle
+                        ? "(t." + col + " <> p." + col +
+                          " OR (t." + col + " IS NULL AND p." + col + " IS NOT NULL)" +
+                          " OR (t." + col + " IS NOT NULL AND p." + col + " IS NULL))"
+                        : "t." + col + " IS DISTINCT FROM p." + col)
+                .collect(Collectors.joining(" OR "));
 
-    // =========================
-    // FINAL SQL
-    // =========================
-    String sql = baseSql + where;
+        String selectPK = pkColumns.stream()
+                .map(pk -> "COALESCE(t." + pk + ", p." + pk + ") AS pk_" + pk)
+                .collect(Collectors.joining(","));
 
-    // =========================
-    // DEBUG OUTPUT
-    // =========================
-    System.out.println("----------- SQL -----------");
-    System.out.println(debugSql(sql, params));
-    System.out.println("---------------------------");
+        String selectCols = compareColumns.stream()
+                .map(col -> "t." + col + " AS t_" + col +
+                        ", p." + col + " AS p_" + col)
+                .collect(Collectors.joining(","));
 
-    // =========================
-    // EXECUTE
-    // =========================
-    return jdbc.queryForList(sql, params.toArray());
-}
+        String orderBy = pkColumns.stream()
+                .map(pk -> "pk_" + pk)
+                .collect(Collectors.joining(","));
 
+        /* =========================
+           DYNAMIC FILTERS
+         ========================= */
 
+        Map<String, Object> params = new HashMap<>();
+        List<String> extraConds = new ArrayList<>();
 
-!!!!!!!!
-
-private String debugSql(String sql, List<Object> params) {
-
-    String result = sql;
-
-    for (Object param : params) {
-
-        String value;
-
-        if (param == null) {
-            value = "NULL";
-        } else if (param instanceof Number) {
-            value = param.toString();
-        } else {
-            value = "'" + param.toString().replace("'", "''") + "'";
+        // COUNTRY
+        if (ctrycds != null && !ctrycds.isEmpty()) {
+            extraConds.add("(t.ctrycd IN (:ctrycds) OR p.ctrycd IN (:ctrycds))");
+            params.put("ctrycds", ctrycds);
         }
 
-        result = result.replaceFirst("\\?", value);
+        // VERSION
+        if (version != null) {
+            extraConds.add("(t.version = :version OR p.version = :version)");
+            params.put("version", version);
+        }
+
+        // PMTTP
+        if (pmttp != null && !pmttp.isBlank()) {
+            extraConds.add("(t.pmttp = :pmttp OR p.pmttp = :pmttp)");
+            params.put("pmttp", pmttp);
+        }
+
+        // SUBPMTTP
+        if (subpmttp != null && !subpmttp.isBlank()) {
+            extraConds.add("(t.subpmttp = :subpmttp OR p.subpmttp = :subpmttp)");
+            params.put("subpmttp", subpmttp);
+        }
+
+        String where =
+                extraConds.isEmpty()
+                        ? ""
+                        : " WHERE " + String.join(" AND ", extraConds);
+
+        /* =========================
+           FINAL SQL
+         ========================= */
+
+        String sql;
+
+        if (isOracle) {
+
+            sql = String.format("""
+                    SELECT %s, %s,
+                    CASE
+                        WHEN %s THEN 'ONLY_IN_PROD'
+                        WHEN %s THEN 'ONLY_IN_TEST'
+                        WHEN (%s) THEN 'DIFFERENT'
+                    END AS status
+                    FROM %s t
+                    FULL OUTER JOIN %s p ON %s
+                    %s
+                    ORDER BY %s
+                    """,
+                    selectPK,
+                    selectCols,
+                    "t.ctrycd IS NULL",
+                    "p.ctrycd IS NULL",
+                    diffCondition,
+                    testTable,
+                    prodTable,
+                    join,
+                    where,
+                    orderBy);
+
+        } else {
+
+            sql = String.format("""
+                    SELECT %s, %s,
+                    CASE
+                        WHEN %s THEN 'ONLY_IN_PROD'
+                        WHEN %s THEN 'ONLY_IN_TEST'
+                        WHEN (%s) THEN 'DIFFERENT'
+                    END AS status
+                    FROM %s t
+                    FULL OUTER JOIN %s p ON %s
+                    %s
+                    ORDER BY %s
+                    """,
+                    selectPK,
+                    selectCols,
+                    "t.ctrycd IS NULL",
+                    "p.ctrycd IS NULL",
+                    diffCondition,
+                    testTable,
+                    prodTable,
+                    join,
+                    where,
+                    orderBy);
+        }
+
+        /* =========================
+           DEBUG SQL
+         ========================= */
+
+        System.out.println("==== FINAL SQL ====");
+        System.out.println(sql);
+        System.out.println("PARAMS = " + params);
+
+        /* =========================
+           EXECUTION
+         ========================= */
+
+        return namedJdbc.queryForList(sql, params);
     }
-
-    return result;
 }
-
-
-
-!!!!!!?
-private void addCondition(
-        List<String> conds,
-        List<Object> params,
-        String condition,
-        Object... values) {
-
-    conds.add("(" + condition + ")");
-    Collections.addAll(params, values);
-}
-
