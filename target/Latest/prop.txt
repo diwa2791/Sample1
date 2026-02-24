@@ -1,44 +1,131 @@
-function buildExpandHtml(row) {
+public List<Map<String, Object>> executeDiffQuery(
+        JdbcTemplate jdbc,
+        boolean isOracle,
+        List<String> ctrycds,
+        Integer version,
+        String pmttp,
+        String subpmttp,
+        String baseSql) {
 
-    if (!row) return "<div>No data</div>";
+    List<String> extraConds = new ArrayList<>();
+    List<Object> params = new ArrayList<>();
 
-    const test = row.testRow || {};
-    const prod = row.prodRow || {};
+    // =========================
+    // COUNTRY FILTER
+    // =========================
+    if (ctrycds != null && !ctrycds.isEmpty()) {
 
-    const allColumns = new Set([
-        ...Object.keys(test),
-        ...Object.keys(prod)
-    ]);
+        String placeholders =
+                String.join(",", Collections.nCopies(ctrycds.size(), "?"));
 
-    let html = `
-        <table class="inner-table">
-            <thead>
-                <tr>
-                    <th>Column</th>
-                    <th>Test</th>
-                    <th>Prod</th>
-                </tr>
-            </thead>
-            <tbody>
-    `;
+        String cond =
+                "(t.ctrycd IN (" + placeholders + ") " +
+                "OR p.ctrycd IN (" + placeholders + "))";
 
-    allColumns.forEach(col => {
+        extraConds.add("(" + cond + ")");
 
-        const t = escapeHtml(test[col]);
-        const p = escapeHtml(prod[col]);
+        params.addAll(ctrycds);
+        params.addAll(ctrycds);
+    }
 
-        const changed = t !== p;
+    // =========================
+    // VERSION FILTER
+    // =========================
+    if (version != null) {
+        addCondition(
+                extraConds,
+                params,
+                "t.version = ? OR p.version = ?",
+                version, version
+        );
+    }
 
-        html += `
-            <tr>
-                <td>${col}</td>
-                <td class="${changed ? 'diff-change' : ''}">${t}</td>
-                <td class="${changed ? 'diff-change' : ''}">${p}</td>
-            </tr>
-        `;
-    });
+    // =========================
+    // PMTTP FILTER (NEW)
+    // =========================
+    if (pmttp != null && !pmttp.isBlank()) {
+        addCondition(
+                extraConds,
+                params,
+                "t.pmttp = ? OR p.pmttp = ?",
+                pmttp, pmttp
+        );
+    }
 
-    html += "</tbody></table>";
+    // =========================
+    // SUBPMTTP FILTER (NEW)
+    // =========================
+    if (subpmttp != null && !subpmttp.isBlank()) {
+        addCondition(
+                extraConds,
+                params,
+                "t.subpmttp = ? OR p.subpmttp = ?",
+                subpmttp, subpmttp
+        );
+    }
 
-    return html;
+    // =========================
+    // WHERE CLAUSE
+    // =========================
+    String where =
+            extraConds.isEmpty()
+                    ? ""
+                    : " WHERE " + String.join(" AND ", extraConds);
+
+    // =========================
+    // FINAL SQL
+    // =========================
+    String sql = baseSql + where;
+
+    // =========================
+    // DEBUG OUTPUT
+    // =========================
+    System.out.println("----------- SQL -----------");
+    System.out.println(debugSql(sql, params));
+    System.out.println("---------------------------");
+
+    // =========================
+    // EXECUTE
+    // =========================
+    return jdbc.queryForList(sql, params.toArray());
 }
+
+
+
+!!!!!!!!
+
+private String debugSql(String sql, List<Object> params) {
+
+    String result = sql;
+
+    for (Object param : params) {
+
+        String value;
+
+        if (param == null) {
+            value = "NULL";
+        } else if (param instanceof Number) {
+            value = param.toString();
+        } else {
+            value = "'" + param.toString().replace("'", "''") + "'";
+        }
+
+        result = result.replaceFirst("\\?", value);
+    }
+
+    return result;
+}
+
+
+
+!!!!!!?
+private void addCondition(
+        List<String> conds,
+        List<Object> params,
+        String condition,
+        Object... values) {
+
+    conds.add("(" + condition + ")");
+    Collections.addAll(params, values);
+}
+
