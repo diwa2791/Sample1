@@ -1,157 +1,252 @@
-@Service
-public class TableCompareService {
+package com.example.compare;
 
-    private final NamedParameterJdbcTemplate namedJdbc;
+import org.springframework.jdbc.core.JdbcTemplate;
 
-    public TableCompareService(DataSource dataSource) {
-        this.namedJdbc = new NamedParameterJdbcTemplate(dataSource);
+import java.math.BigDecimal;
+import java.util.*;
+import java.util.stream.Collectors;
+
+public class TableCompareEngine {
+
+    private final JdbcTemplate testJdbc;
+    private final JdbcTemplate prodJdbc;
+
+    public TableCompareEngine(JdbcTemplate testJdbc,
+                              JdbcTemplate prodJdbc) {
+        this.testJdbc = testJdbc;
+        this.prodJdbc = prodJdbc;
     }
+
+    /* ============================================================
+       MAIN ENTRY METHOD
+       ============================================================ */
 
     public List<Map<String, Object>> executeDiffQuery(
-            String testTable,
-            String prodTable,
+            String testQuery,
+            String prodQuery,
+            List<String> pkColumns) {
+
+        if (pkColumns == null || pkColumns.isEmpty()) {
+            throw new IllegalArgumentException("PK columns required");
+        }
+
+        // 1️⃣ Fetch data
+        List<Map<String, Object>> testRows =
+                testJdbc.queryForList(testQuery);
+
+        List<Map<String, Object>> prodRows =
+                prodJdbc.queryForList(prodQuery);
+
+        // 2️⃣ Build lookup maps
+        Map<String, Map<String, Object>> testMap =
+                buildMap(testRows, pkColumns);
+
+        Map<String, Map<String, Object>> prodMap =
+                buildMap(prodRows, pkColumns);
+
+        // 3️⃣ Compare
+        Set<String> allKeys = new HashSet<>();
+        allKeys.addAll(testMap.keySet());
+        allKeys.addAll(prodMap.keySet());
+
+        List<Map<String, Object>> result = new ArrayList<>();
+
+        for (String key : allKeys) {
+
+            Map<String, Object> testRow = testMap.get(key);
+            Map<String, Object> prodRow = prodMap.get(key);
+
+            if (testRow == null) {
+                result.add(buildUiRow(
+                        null, prodRow, pkColumns, "ONLY_IN_PROD"));
+            }
+            else if (prodRow == null) {
+                result.add(buildUiRow(
+                        testRow, null, pkColumns, "ONLY_IN_TEST"));
+            }
+            else if (!rowsEqual(testRow, prodRow)) {
+                result.add(buildUiRow(
+                        testRow, prodRow, pkColumns, "DIFFERENT"));
+            }
+        }
+
+        return result;
+    }
+
+    /* ============================================================
+       BUILD MAP USING PK
+       ============================================================ */
+
+    private Map<String, Map<String, Object>> buildMap(
+            List<Map<String, Object>> rows,
+            List<String> pkColumns) {
+
+        Map<String, Map<String, Object>> map = new HashMap<>();
+
+        for (Map<String, Object> row : rows) {
+
+            validatePkPresence(row, pkColumns);
+
+            String key = buildKey(row, pkColumns);
+            map.put(key, row);
+        }
+
+        return map;
+    }
+
+    /* ============================================================
+       BUILD UNIQUE KEY FROM PK
+       ============================================================ */
+
+    private String buildKey(
+            Map<String, Object> row,
+            List<String> pkColumns) {
+
+        return pkColumns.stream()
+                .map(pk -> Objects.toString(row.get(pk), "NULL"))
+                .collect(Collectors.joining("|"));
+    }
+
+    /* ============================================================
+       VALIDATE PK EXISTS IN QUERY
+       ============================================================ */
+
+    private void validatePkPresence(
+            Map<String, Object> row,
+            List<String> pkColumns) {
+
+        for (String pk : pkColumns) {
+            if (!row.containsKey(pk)) {
+                throw new IllegalArgumentException(
+                        "PK column missing in select query: " + pk);
+            }
+        }
+    }
+
+    /* ============================================================
+       ROW COMPARISON
+       ============================================================ */
+
+    private boolean rowsEqual(
+            Map<String, Object> r1,
+            Map<String, Object> r2) {
+
+        Set<String> allCols = new HashSet<>();
+        allCols.addAll(r1.keySet());
+        allCols.addAll(r2.keySet());
+
+        for (String col : allCols) {
+
+            Object v1 = normalize(r1.get(col));
+            Object v2 = normalize(r2.get(col));
+
+            if (!Objects.equals(v1, v2)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /* ============================================================
+       NORMALIZER (Oracle/Postgres Safe)
+       ============================================================ */
+
+    private Object normalize(Object value) {
+
+        if (value == null)
+            return null;
+
+        if (value instanceof Number)
+            return new BigDecimal(value.toString());
+
+        if (value instanceof java.sql.Timestamp)
+            return ((java.sql.Timestamp) value).toInstant();
+
+        return value.toString().trim();
+    }
+
+    /* ============================================================
+       BUILD UI-COMPATIBLE RESULT ROW
+       ============================================================ */
+
+    private Map<String, Object> buildUiRow(
+            Map<String, Object> testRow,
+            Map<String, Object> prodRow,
             List<String> pkColumns,
-            List<String> compareColumns,
-            List<String> ctrycds,
-            String version,
-            String pmttp,
-            String subpmttp,
-            boolean isOracle) {
+            String status) {
 
-        /* =========================
-           BUILD COLUMN SECTIONS
-         ========================= */
+        Map<String, Object> result =
+                new LinkedHashMap<>();
 
-        String join = pkColumns.stream()
-                .map(pk -> "t." + pk + " = p." + pk)
-                .collect(Collectors.joining(" AND "));
+        Map<String, Object> source =
+                testRow != null ? testRow : prodRow;
 
-        String diffCondition = compareColumns.stream()
-                .map(col -> isOracle
-                        ? "(t." + col + " <> p." + col +
-                          " OR (t." + col + " IS NULL AND p." + col + " IS NOT NULL)" +
-                          " OR (t." + col + " IS NOT NULL AND p." + col + " IS NULL))"
-                        : "t." + col + " IS DISTINCT FROM p." + col)
-                .collect(Collectors.joining(" OR "));
-
-        String selectPK = pkColumns.stream()
-                .map(pk -> "COALESCE(t." + pk + ", p." + pk + ") AS pk_" + pk)
-                .collect(Collectors.joining(","));
-
-        String selectCols = compareColumns.stream()
-                .map(col -> "t." + col + " AS t_" + col +
-                        ", p." + col + " AS p_" + col)
-                .collect(Collectors.joining(","));
-
-        String orderBy = pkColumns.stream()
-                .map(pk -> "pk_" + pk)
-                .collect(Collectors.joining(","));
-
-        /* =========================
-           DYNAMIC FILTERS
-         ========================= */
-
-        Map<String, Object> params = new HashMap<>();
-        List<String> extraConds = new ArrayList<>();
-
-        // COUNTRY
-        if (ctrycds != null && !ctrycds.isEmpty()) {
-            extraConds.add("(t.ctrycd IN (:ctrycds) OR p.ctrycd IN (:ctrycds))");
-            params.put("ctrycds", ctrycds);
+        // 1️⃣ PK columns
+        for (String pk : pkColumns) {
+            result.put("pk_" + pk,
+                    source != null ? source.get(pk) : null);
         }
 
-        // VERSION
-        if (version != null) {
-            extraConds.add("(t.version = :version OR p.version = :version)");
-            params.put("version", version);
+        // 2️⃣ All other columns
+        Set<String> allColumns = new HashSet<>();
+
+        if (testRow != null)
+            allColumns.addAll(testRow.keySet());
+
+        if (prodRow != null)
+            allColumns.addAll(prodRow.keySet());
+
+        for (String col : allColumns) {
+
+            if (pkColumns.contains(col))
+                continue;
+
+            result.put("t_" + col,
+                    testRow != null ? testRow.get(col) : null);
+
+            result.put("p_" + col,
+                    prodRow != null ? prodRow.get(col) : null);
         }
 
-        // PMTTP
-        if (pmttp != null && !pmttp.isBlank()) {
-            extraConds.add("(t.pmttp = :pmttp OR p.pmttp = :pmttp)");
-            params.put("pmttp", pmttp);
-        }
+        // 3️⃣ Status
+        result.put("status", status);
 
-        // SUBPMTTP
-        if (subpmttp != null && !subpmttp.isBlank()) {
-            extraConds.add("(t.subpmttp = :subpmttp OR p.subpmttp = :subpmttp)");
-            params.put("subpmttp", subpmttp);
-        }
-
-        String where =
-                extraConds.isEmpty()
-                        ? ""
-                        : " WHERE " + String.join(" AND ", extraConds);
-
-        /* =========================
-           FINAL SQL
-         ========================= */
-
-        String sql;
-
-        if (isOracle) {
-
-            sql = String.format("""
-                    SELECT %s, %s,
-                    CASE
-                        WHEN %s THEN 'ONLY_IN_PROD'
-                        WHEN %s THEN 'ONLY_IN_TEST'
-                        WHEN (%s) THEN 'DIFFERENT'
-                    END AS status
-                    FROM %s t
-                    FULL OUTER JOIN %s p ON %s
-                    %s
-                    ORDER BY %s
-                    """,
-                    selectPK,
-                    selectCols,
-                    "t.ctrycd IS NULL",
-                    "p.ctrycd IS NULL",
-                    diffCondition,
-                    testTable,
-                    prodTable,
-                    join,
-                    where,
-                    orderBy);
-
-        } else {
-
-            sql = String.format("""
-                    SELECT %s, %s,
-                    CASE
-                        WHEN %s THEN 'ONLY_IN_PROD'
-                        WHEN %s THEN 'ONLY_IN_TEST'
-                        WHEN (%s) THEN 'DIFFERENT'
-                    END AS status
-                    FROM %s t
-                    FULL OUTER JOIN %s p ON %s
-                    %s
-                    ORDER BY %s
-                    """,
-                    selectPK,
-                    selectCols,
-                    "t.ctrycd IS NULL",
-                    "p.ctrycd IS NULL",
-                    diffCondition,
-                    testTable,
-                    prodTable,
-                    join,
-                    where,
-                    orderBy);
-        }
-
-        /* =========================
-           DEBUG SQL
-         ========================= */
-
-        System.out.println("==== FINAL SQL ====");
-        System.out.println(sql);
-        System.out.println("PARAMS = " + params);
-
-        /* =========================
-           EXECUTION
-         ========================= */
-
-        return namedJdbc.queryForList(sql, params);
+        return result;
     }
 }
+
+
+----------------------
+TableCompareEngine engine =
+        new TableCompareEngine(testJdbc, prodJdbc);
+
+List<Map<String,Object>> result =
+        engine.executeDiffQuery(
+                "select * from acct_status_config where version=0.1",
+                "select * from acct_status_config where version=0.1",
+                List.of("ctrycd", "pmttp", "subpmttp"));
+
+
+
+------------------
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+
+public static void printAsJson(List<Map<String, Object>> data) {
+
+    try {
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.enable(SerializationFeature.INDENT_OUTPUT);
+
+        String json = mapper.writeValueAsString(data);
+
+        System.out.println("========= JSON OUTPUT =========");
+        System.out.println(json);
+        System.out.println("================================");
+
+    } catch (Exception e) {
+        e.printStackTrace();
+    }
+}
+
