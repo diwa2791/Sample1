@@ -1,252 +1,165 @@
-package com.example.compare;
+<ul class="nav nav-tabs mb-3">
 
-import org.springframework.jdbc.core.JdbcTemplate;
+<li class="nav-item">
+<a class="nav-link"
+   th:classappend="${tab=='modified'} ? 'active'"
+   th:href="@{/compare/result(cacheId=${cacheId},tab='modified',page=0)}">
+   Modified
+</a>
+</li>
 
-import java.math.BigDecimal;
-import java.util.*;
-import java.util.stream.Collectors;
+<li class="nav-item">
+<a class="nav-link"
+   th:classappend="${tab=='test'} ? 'active'"
+   th:href="@{/compare/result(cacheId=${cacheId},tab='test',page=0)}">
+   Only in Test
+</a>
+</li>
 
-public class TableCompareEngine {
+<li class="nav-item">
+<a class="nav-link"
+   th:classappend="${tab=='prod'} ? 'active'"
+   th:href="@{/compare/result(cacheId=${cacheId},tab='prod',page=0)}">
+   Only in Prod
+</a>
+</li>
 
-    private final JdbcTemplate testJdbc;
-    private final JdbcTemplate prodJdbc;
+</ul>
 
-    public TableCompareEngine(JdbcTemplate testJdbc,
-                              JdbcTemplate prodJdbc) {
-        this.testJdbc = testJdbc;
-        this.prodJdbc = prodJdbc;
+--------------
+
+<table class="table">
+
+<thead>
+<tr>
+    <th>Primary Key</th>
+
+    <th th:if="${tab=='modified'}">Changed Columns</th>
+
+    <th>Action</th>
+</tr>
+</thead>
+
+<tbody>
+
+<th:block th:each="row,iterStat : ${data.rows}">
+
+<tr>
+    <td th:text="${#strings.listJoin(row.primaryKey.values(),' | ')}"></td>
+
+    <!-- Only for modified -->
+    <td th:if="${tab=='modified'}"
+        th:text="${row.changedColumns.size()}">
+    </td>
+
+    <td>
+        <button type="button"
+                class="expand-btn"
+                onclick="loadRow(this)"
+                th:attr="
+                    data-pk=${row.primaryKey},
+                    data-rowid='row-'+${iterStat.index}">
+            Expand
+        </button>
+    </td>
+</tr>
+
+<tr class="expand-row"
+    th:id="'row-'+${iterStat.index}"
+    style="display:none;">
+    <td colspan="3">
+        <div class="expand-content"></div>
+    </td>
+</tr>
+
+</th:block>
+
+</tbody>
+</table>
+
+
+
+-----------
+
+<div class="pagination">
+
+<a th:if="${data.page > 0}"
+   th:href="@{/compare/result(cacheId=${cacheId},tab=${tab},page=${data.page-1})}">
+   ◀ Prev
+</a>
+
+<span>
+Page <b th:text="${data.page+1}"></b> /
+<span th:text="${data.totalPages}"></span>
+</span>
+
+<a th:if="${data.page+1 < data.totalPages}"
+   th:href="@{/compare/result(cacheId=${cacheId},tab=${tab},page=${data.page+1})}">
+   Next ▶
+</a>
+
+</div>
+
+
+------------
+<script th:inline="javascript">
+const cacheId = [[${cacheId}]];
+const tab = [[${tab}]];
+</script>
+
+
+------------
+
+async function loadRow(btn) {
+
+    const expandRow = btn.closest('tr').nextElementSibling;
+    const container = expandRow.querySelector('.expand-content');
+
+    if (expandRow.style.display === 'table-row') {
+        expandRow.style.display = 'none';
+        return;
     }
 
-    /* ============================================================
-       MAIN ENTRY METHOD
-       ============================================================ */
+    expandRow.style.display = 'table-row';
+    container.innerHTML = "Loading...";
 
-    public List<Map<String, Object>> executeDiffQuery(
-            String testQuery,
-            String prodQuery,
-            List<String> pkColumns) {
+    const pk = btn.dataset.pk;
 
-        if (pkColumns == null || pkColumns.isEmpty()) {
-            throw new IllegalArgumentException("PK columns required");
-        }
+    const res = await fetch(
+        `/compare/row?cacheId=${cacheId}&pk=${encodeURIComponent(pk)}&tab=${tab}`
+    );
 
-        // 1️⃣ Fetch data
-        List<Map<String, Object>> testRows =
-                testJdbc.queryForList(testQuery);
+    const data = await res.json();
 
-        List<Map<String, Object>> prodRows =
-                prodJdbc.queryForList(prodQuery);
-
-        // 2️⃣ Build lookup maps
-        Map<String, Map<String, Object>> testMap =
-                buildMap(testRows, pkColumns);
-
-        Map<String, Map<String, Object>> prodMap =
-                buildMap(prodRows, pkColumns);
-
-        // 3️⃣ Compare
-        Set<String> allKeys = new HashSet<>();
-        allKeys.addAll(testMap.keySet());
-        allKeys.addAll(prodMap.keySet());
-
-        List<Map<String, Object>> result = new ArrayList<>();
-
-        for (String key : allKeys) {
-
-            Map<String, Object> testRow = testMap.get(key);
-            Map<String, Object> prodRow = prodMap.get(key);
-
-            if (testRow == null) {
-                result.add(buildUiRow(
-                        null, prodRow, pkColumns, "ONLY_IN_PROD"));
-            }
-            else if (prodRow == null) {
-                result.add(buildUiRow(
-                        testRow, null, pkColumns, "ONLY_IN_TEST"));
-            }
-            else if (!rowsEqual(testRow, prodRow)) {
-                result.add(buildUiRow(
-                        testRow, prodRow, pkColumns, "DIFFERENT"));
-            }
-        }
-
-        return result;
-    }
-
-    /* ============================================================
-       BUILD MAP USING PK
-       ============================================================ */
-
-    private Map<String, Map<String, Object>> buildMap(
-            List<Map<String, Object>> rows,
-            List<String> pkColumns) {
-
-        Map<String, Map<String, Object>> map = new HashMap<>();
-
-        for (Map<String, Object> row : rows) {
-
-            validatePkPresence(row, pkColumns);
-
-            String key = buildKey(row, pkColumns);
-            map.put(key, row);
-        }
-
-        return map;
-    }
-
-    /* ============================================================
-       BUILD UNIQUE KEY FROM PK
-       ============================================================ */
-
-    private String buildKey(
-            Map<String, Object> row,
-            List<String> pkColumns) {
-
-        return pkColumns.stream()
-                .map(pk -> Objects.toString(row.get(pk), "NULL"))
-                .collect(Collectors.joining("|"));
-    }
-
-    /* ============================================================
-       VALIDATE PK EXISTS IN QUERY
-       ============================================================ */
-
-    private void validatePkPresence(
-            Map<String, Object> row,
-            List<String> pkColumns) {
-
-        for (String pk : pkColumns) {
-            if (!row.containsKey(pk)) {
-                throw new IllegalArgumentException(
-                        "PK column missing in select query: " + pk);
-            }
-        }
-    }
-
-    /* ============================================================
-       ROW COMPARISON
-       ============================================================ */
-
-    private boolean rowsEqual(
-            Map<String, Object> r1,
-            Map<String, Object> r2) {
-
-        Set<String> allCols = new HashSet<>();
-        allCols.addAll(r1.keySet());
-        allCols.addAll(r2.keySet());
-
-        for (String col : allCols) {
-
-            Object v1 = normalize(r1.get(col));
-            Object v2 = normalize(r2.get(col));
-
-            if (!Objects.equals(v1, v2)) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    /* ============================================================
-       NORMALIZER (Oracle/Postgres Safe)
-       ============================================================ */
-
-    private Object normalize(Object value) {
-
-        if (value == null)
-            return null;
-
-        if (value instanceof Number)
-            return new BigDecimal(value.toString());
-
-        if (value instanceof java.sql.Timestamp)
-            return ((java.sql.Timestamp) value).toInstant();
-
-        return value.toString().trim();
-    }
-
-    /* ============================================================
-       BUILD UI-COMPATIBLE RESULT ROW
-       ============================================================ */
-
-    private Map<String, Object> buildUiRow(
-            Map<String, Object> testRow,
-            Map<String, Object> prodRow,
-            List<String> pkColumns,
-            String status) {
-
-        Map<String, Object> result =
-                new LinkedHashMap<>();
-
-        Map<String, Object> source =
-                testRow != null ? testRow : prodRow;
-
-        // 1️⃣ PK columns
-        for (String pk : pkColumns) {
-            result.put("pk_" + pk,
-                    source != null ? source.get(pk) : null);
-        }
-
-        // 2️⃣ All other columns
-        Set<String> allColumns = new HashSet<>();
-
-        if (testRow != null)
-            allColumns.addAll(testRow.keySet());
-
-        if (prodRow != null)
-            allColumns.addAll(prodRow.keySet());
-
-        for (String col : allColumns) {
-
-            if (pkColumns.contains(col))
-                continue;
-
-            result.put("t_" + col,
-                    testRow != null ? testRow.get(col) : null);
-
-            result.put("p_" + col,
-                    prodRow != null ? prodRow.get(col) : null);
-        }
-
-        // 3️⃣ Status
-        result.put("status", status);
-
-        return result;
-    }
+    container.innerHTML = buildExpandHtml(data);
 }
 
 
-----------------------
-TableCompareEngine engine =
-        new TableCompareEngine(testJdbc, prodJdbc);
+-------
 
-List<Map<String,Object>> result =
-        engine.executeDiffQuery(
-                "select * from acct_status_config where version=0.1",
-                "select * from acct_status_config where version=0.1",
-                List.of("ctrycd", "pmttp", "subpmttp"));
+function buildExpandHtml(data) {
 
+    let html = `<table class="inner-table">
+        <tr>
+            <th>Column</th>
+            <th>Test</th>
+            <th>Prod</th>
+        </tr>`;
 
+    Object.keys(data.testRow || {}).forEach(key => {
 
-------------------
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
+        html += `
+        <tr>
+            <td>${key}</td>
+            <td>${data.testRow[key] ?? ''}</td>
+            <td>${data.prodRow[key] ?? ''}</td>
+        </tr>`;
+    });
 
-public static void printAsJson(List<Map<String, Object>> data) {
+    html += "</table>";
 
-    try {
-        ObjectMapper mapper = new ObjectMapper();
-        mapper.enable(SerializationFeature.INDENT_OUTPUT);
-
-        String json = mapper.writeValueAsString(data);
-
-        System.out.println("========= JSON OUTPUT =========");
-        System.out.println(json);
-        System.out.println("================================");
-
-    } catch (Exception e) {
-        e.printStackTrace();
-    }
+    return html;
 }
+
+
 
