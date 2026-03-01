@@ -1,60 +1,52 @@
-th:attr="data-pk=${row.primaryKeyJson}"
+private RowDiffDTO findMatchingRow(
+        List<RowDiffDTO> rows,
+        Map<String, Object> requestPk) {
 
-.filter(r -> r.getPrimaryKey().entrySet().stream()
-        .allMatch(e ->
-            Objects.equals(
-                String.valueOf(e.getValue()),
-                String.valueOf(pk.get(e.getKey()))
-            )
-        )
-)
+    if (rows == null || requestPk == null)
+        return null;
 
+    outer:
+    for (RowDiffDTO row : rows) {
 
+        Map<String, Object> rowPk = row.getPrimaryKey();
 
-return list.stream()
-        .filter(r -> r.getPrimaryKey().equals(pk))
-        .findFirst()
-        .orElse(null);
+        if (rowPk.size() != requestPk.size())
+            continue;
 
-th:attr="data-pk=${#objectMapper.writeValueAsString(row.primaryKey)}"
-------
+        for (Map.Entry<String, Object> entry : rowPk.entrySet()) {
 
-public String getPrimaryKeyJson() throws Exception {
-    return new ObjectMapper().writeValueAsString(primaryKey);
+            Object reqVal = requestPk.get(entry.getKey());
+
+            if (reqVal == null)
+                continue outer;
+
+            if (!String.valueOf(entry.getValue())
+                    .equals(String.valueOf(reqVal)))
+                continue outer;
+        }
+
+        return row; // match found
+    }
+
+    return null;
 }
 
 -------
-const pk = btn.dataset.pk;
-const pk = encodeURIComponent(btn.dataset.pk);
 
 
+public RowDiffDTO getRowDetails(
+        String cacheId,
+        Map<String,Object> pk,
+        String tab) {
 
-------------
+    TableDiffResponseDTO diff = cache.get(cacheId).data;
 
-@GetMapping("/row")
-@ResponseBody
-public RowDiffDTO getRow(
-        @RequestParam String cacheId,
-        @RequestParam String pk,
-        @RequestParam String tab) throws Exception {
+    List<RowDiffDTO> list =
+            switch (tab) {
+                case "test" -> diff.onlyInTestRows;
+                case "prod" -> diff.onlyInProdRows;
+                default     -> diff.modifiedRows;
+            };
 
-    Map<String,Object> primaryKey =
-        new ObjectMapper().readValue(pk, Map.class);
-
-    return service.getRowDetails(cacheId, primaryKey, tab);
+    return findMatchingRow(list, pk);
 }
-
-
--------
-
-if (!res.ok) {
-    const text = await res.text();
-    console.error("Server error:", text);
-    return;
-}
-
-const data = await res.json();
-
-
-
-
