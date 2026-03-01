@@ -1,5 +1,7 @@
 th:attr="data-pk=${row.primaryKeyJson}"
 
+
+th:attr="data-pk=${#objectMapper.writeValueAsString(row.primaryKey)}"
 ------
 
 public String getPrimaryKeyJson() throws Exception {
@@ -37,3 +39,4 @@ if (!res.ok) {
 }
 
 const data = await res.json();
+
