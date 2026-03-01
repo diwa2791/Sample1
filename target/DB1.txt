@@ -1,5 +1,13 @@
 th:attr="data-pk=${row.primaryKeyJson}"
 
+for (String key : r.getPrimaryKey().keySet()) {
+    if (!Objects.equals(r.getPrimaryKey().get(key), pk.get(key))) {
+        return false;
+    }
+}
+return true;
+
+
 
 return list.stream()
         .filter(r -> r.getPrimaryKey().equals(pk))
@@ -44,5 +52,6 @@ if (!res.ok) {
 }
 
 const data = await res.json();
+
 
 
