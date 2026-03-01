@@ -1,33 +1,87 @@
-@Controller
-@RequestMapping("/compare")
-public class CompareController {
+function buildExpandHtml(data) {
 
-    private final TableCompareService service;
+    let html = `
+        <table class="inner-table">
+            <thead>
+                <tr>
+                    <th>Column</th>
+                    <th>Test</th>
+                    <th>Prod</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
 
-    public CompareController(TableCompareService service) {
-        this.service = service;
+    const status = data.status || '';
+
+    // =========================
+    // MODIFIED ROW
+    // =========================
+    if (status === "DIFFERENT") {
+
+        const cols = data.changedColumns || [];
+
+        cols.forEach(col => {
+            html += `
+                <tr>
+                    <td>${col.columnName ?? ''}</td>
+                    <td class="test-value">${col.testHighlighted ?? ''}</td>
+                    <td class="prod-value">${col.prodHighlighted ?? ''}</td>
+                </tr>
+            `;
+        });
+
+        if (cols.length === 0) {
+            html += `
+                <tr>
+                    <td colspan="3" style="text-align:center;opacity:0.7">
+                        No differences found
+                    </td>
+                </tr>
+            `;
+        }
     }
 
-    // Initial page load
-    @GetMapping
-    public String showPage(Model model) {
-        model.addAttribute("request", new CompareRequest());
-        return "compare";
+    // =========================
+    // ONLY IN PROD
+    // =========================
+    else if (status === "ONLY_IN_PROD") {
+
+        const row = data.prodRow || {};
+
+        Object.keys(row).forEach(key => {
+            html += `
+                <tr>
+                    <td>${key}</td>
+                    <td></td>
+                    <td class="prod-value">${row[key] ?? ''}</td>
+                </tr>
+            `;
+        });
     }
 
-    // Form submit
-    @PostMapping
-    public String compare(
-            @ModelAttribute("request") CompareRequest request,
-            Model model) {
+    // =========================
+    // ONLY IN TEST
+    // =========================
+    else if (status === "ONLY_IN_TEST") {
 
-        TableDiffResponseDTO diff = service.compareTable(
-                request.getTableName(),
-                request.getIncludeColumns(),
-                request.getExcludeColumns(),
-                request.getFallbackKeys());
+        const row = data.testRow || {};
 
-        model.addAttribute("diff", diff);
-        return "compare";
+        Object.keys(row).forEach(key => {
+            html += `
+                <tr>
+                    <td>${key}</td>
+                    <td class="test-value">${row[key] ?? ''}</td>
+                    <td></td>
+                </tr>
+            `;
+        });
     }
+
+    html += `
+            </tbody>
+        </table>
+    `;
+
+    return html;
 }
