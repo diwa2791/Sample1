@@ -1,79 +1,415 @@
+package com.example.batchcompare;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.stereotype.*;
+import org.springframework.web.client.RestTemplate;
+
+import java.io.File;
+import java.nio.file.*;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+
+@SpringBootApplication
+public class BatchCompareApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(BatchCompareApplication.class, args);
+    }
+
+    // ===============================
+    // DATA MODELS
+    // ===============================
+
+    static class DiffNode {
+        public String path;
+        public String value1;
+        public String value2;
+        public String type;
+
+        public DiffNode(String path, String value1, String value2, String type) {
+            this.path = path;
+            this.value1 = value1;
+            this.value2 = value2;
+            this.type = type;
+        }
+    }
+
+    static class UetrResult {
+        public String uetr;
+        public JsonNode prodPayload;
+        public JsonNode apiPayload;
+        public List<DiffNode> diffs = new ArrayList<>();
+    }
+
+    static class IdResult {
+        public String id;
+        public List<UetrResult> uetrResults = new ArrayList<>();
+    }
+
+    static class BatchResult {
+        public String batchId;
+        public Map<String, IdResult> idResults = new LinkedHashMap<>();
+    }
+
+    // ===============================
+    // BASELINE LOADER
+    // ===============================
+
+    @Service
+    static class BaselineLoaderService {
+
+        private final ObjectMapper mapper = new ObjectMapper();
+        private final Map<String, JsonNode> baselineStore = new ConcurrentHashMap<>();
+
+        public void loadFolder(String folder) throws Exception {
+
+            Files.walk(Paths.get(folder))
+                    .filter(Files::isRegularFile)
+                    .forEach(path -> {
+                        try {
+                            JsonNode node = mapper.readTree(path.toFile());
+                            String id = node.get("id").asText();
+                            baselineStore.put(id, node);
+                        } catch (Exception e) {
+                            throw new RuntimeException(e);
+                        }
+                    });
+        }
+
+        public JsonNode get(String id) {
+            return baselineStore.get(id);
+        }
+    }
+
+    // ===============================
+    // API FETCH
+    // ===============================
+
+    @Service
+    static class ApiFetchService {
+
+        private final RestTemplate restTemplate = new RestTemplate();
+        private final ObjectMapper mapper = new ObjectMapper();
+
+        public JsonNode fetch(String id) throws Exception {
+
+            String url = "http://localhost:8081/api/" + id;
+            String response = restTemplate.getForObject(url, String.class);
+            return mapper.readTree(response);
+        }
+    }
+
+    // ===============================
+    // JSON DIFF ENGINE
+    // ===============================
+
+    @Service
+    static class JsonDiffService {
+
+        public List<DiffNode> compare(JsonNode a, JsonNode b) {
+
+            List<DiffNode> diffs = new ArrayList<>();
+            compareRecursive("", a, b, diffs);
+            return diffs;
+        }
+
+        private void compareRecursive(String path, JsonNode a, JsonNode b, List<DiffNode> diffs) {
+
+            if (a == null && b != null) {
+                diffs.add(new DiffNode(path, null, b.toString(), "ADDED"));
+                return;
+            }
+
+            if (a != null && b == null) {
+                diffs.add(new DiffNode(path, a.toString(), null, "REMOVED"));
+                return;
+            }
+
+            if (a.isValueNode() && b.isValueNode()) {
+                if (!a.equals(b)) {
+                    diffs.add(new DiffNode(path, a.toString(), b.toString(), "CHANGED"));
+                }
+                return;
+            }
+
+            Set<String> fields = new HashSet<>();
+            a.fieldNames().forEachRemaining(fields::add);
+            b.fieldNames().forEachRemaining(fields::add);
+
+            for (String field : fields) {
+                compareRecursive(
+                        path + "/" + field,
+                        a.get(field),
+                        b.get(field),
+                        diffs
+                );
+            }
+        }
+    }
+
+    // ===============================
+    // BATCH SERVICE
+    // ===============================
+
+    @Service
+    static class BatchCompareService {
+
+        private final BaselineLoaderService baseline;
+        private final ApiFetchService api;
+        private final JsonDiffService diff;
+
+        private final Map<String, BatchResult> batchStore = new ConcurrentHashMap<>();
+
+        public BatchCompareService(
+                BaselineLoaderService baseline,
+                ApiFetchService api,
+                JsonDiffService diff) {
+            this.baseline = baseline;
+            this.api = api;
+            this.diff = diff;
+        }
+
+        public String run(List<String> ids) throws Exception {
+
+            String batchId = UUID.randomUUID().toString();
+            BatchResult batch = new BatchResult();
+            batch.batchId = batchId;
+
+            for (String id : ids) {
+
+                JsonNode prod = baseline.get(id);
+                JsonNode apiResp = api.fetch(id);
+
+                List<DiffNode> diffs = diff.compare(prod, apiResp);
+
+                IdResult idResult = new IdResult();
+                idResult.id = id;
+
+                UetrResult u = new UetrResult();
+                u.uetr = prod.has("uetr") ? prod.get("uetr").asText() : "MAIN";
+                u.prodPayload = prod;
+                u.apiPayload = apiResp;
+                u.diffs = diffs;
+
+                idResult.uetrResults.add(u);
+                batch.idResults.put(id, idResult);
+            }
+
+            batchStore.put(batchId, batch);
+            return batchId;
+        }
+
+        public BatchResult get(String batchId) {
+            return batchStore.get(batchId);
+        }
+    }
+
+    // ===============================
+    // CONTROLLER
+    // ===============================
+
+    @RestController
+    @RequestMapping("/compare")
+    static class CompareController {
+
+        private final BaselineLoaderService loader;
+        private final BatchCompareService batch;
+
+        public CompareController(
+                BaselineLoaderService loader,
+                BatchCompareService batch) {
+            this.loader = loader;
+            this.batch = batch;
+        }
+
+        @PostMapping("/baseline/load")
+        public String load() throws Exception {
+            loader.loadFolder("prod/input");
+            return "Baseline loaded";
+        }
+
+        @PostMapping("/run")
+        public String run(@RequestBody String ids) throws Exception {
+            List<String> idList = Arrays.asList(ids.split(","));
+            return batch.run(idList);
+        }
+
+        @GetMapping("/batch/{batchId}")
+        public BatchResult result(@PathVariable String batchId) {
+            return batch.get(batchId);
+        }
+
+        // ===============================
+        // SIMPLE UI PAGE
+        // ===============================
+
+        @GetMapping("/ui")
+        public String ui() {
+            return """
+<!DOCTYPE html>
+<html>
+<head>
+<title>Batch JSON Compare</title>
+<style>
+body{font-family:Arial;background:#0f172a;color:white;padding:20px;}
+button{padding:6px 10px;margin:4px;}
+.card{border:1px solid #334155;margin-top:10px;padding:10px;}
+.header{cursor:pointer;font-weight:bold;}
+.changed{color:#ff8080;}
+</style>
+</head>
+<body>
+
+<h2>Batch Compare UI</h2>
+
+<input id="ids" placeholder="Enter IDs comma separated"/>
+<button onclick="run()">Run</button>
+
+<div id="output"></div>
+
+<script>
+
+async function run(){
+    const ids=document.getElementById("ids").value;
+    const batchId=await fetch("/compare/run",{method:"POST",body:ids}).then(r=>r.text());
+    const data=await fetch("/compare/batch/"+batchId).then(r=>r.json());
+    render(data);
+}
+
+function render(data){
+
+    const out=document.getElementById("output");
+    out.innerHTML="";
+
+    Object.values(data.idResults).forEach(idRes=>{
+
+        const div=document.createElement("div");
+        div.className="card";
+
+        div.innerHTML="<div class='header'>"+idRes.id+"</div>";
+
+        idRes.uetrResults.forEach(u=>{
+
+            const udiv=document.createElement("div");
+            udiv.innerHTML="<b>UETR:</b> "+u.uetr+
+            " | Diffs: <span class='changed'>"+u.diffs.length+"</span>";
+
+            div.appendChild(udiv);
+        });
+
+        out.appendChild(div);
+    });
+}
+
+</script>
+
+</body>
+</html>
+""";
+        }
+    }
+}
+
+
+
+-----------------------
+@GetMapping("/ui")
+public String ui() {
+    return """
 <!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Advanced JSON Diff Viewer</title>
+<title>Batch Deep JSON Compare</title>
 
 <style>
-
 body{
-    background:#0f172a;
+    margin:0;
+    font-family:Segoe UI,Arial;
+    background:linear-gradient(135deg,#0f172a,#1e293b);
     color:#e2e8f0;
-    font-family:monospace;
-    padding:20px;
+    padding:30px;
 }
 
-textarea{
-    width:100%;
-    height:160px;
-    background:#020617;
-    color:white;
-    border:1px solid #334155;
-    margin-bottom:10px;
+h2{margin-bottom:20px;}
+
+.input-bar{
+    display:flex;
+    gap:10px;
+    margin-bottom:15px;
+}
+
+input{
+    flex:1;
     padding:10px;
+    background:rgba(255,255,255,0.05);
+    border:1px solid rgba(255,255,255,0.1);
+    color:white;
+    border-radius:6px;
 }
 
 button{
     padding:8px 14px;
-    margin-right:6px;
-    background:#2563eb;
+    background:#3b82f6;
     border:none;
     color:white;
+    border-radius:6px;
     cursor:pointer;
-    border-radius:4px;
-}
-
-input{
-    width:100%;
-    padding:8px;
-    margin:10px 0;
-    background:#020617;
-    border:1px solid #334155;
-    color:white;
 }
 
 .card{
-    border:1px solid #334155;
-    margin-top:15px;
-    border-radius:6px;
+    backdrop-filter:blur(12px);
+    background:rgba(255,255,255,0.05);
+    border:1px solid rgba(255,255,255,0.1);
+    border-radius:10px;
+    margin-bottom:15px;
+    overflow:hidden;
 }
 
 .card-header{
-    background:#1e293b;
-    padding:10px;
-    font-weight:bold;
+    padding:14px;
     cursor:pointer;
-    position:relative;
+    font-weight:600;
+    display:flex;
+    justify-content:space-between;
 }
 
 .card-body{
     display:none;
-    padding:10px;
-    overflow-x:auto;
+    padding:15px;
+    border-top:1px solid rgba(255,255,255,0.1);
+}
+
+.badge{
+    padding:4px 10px;
+    border-radius:20px;
+    font-size:12px;
+    font-weight:600;
+}
+
+.badge-red{
+    background:rgba(255,80,80,0.2);
+    color:#ff8080;
+}
+
+.badge-green{
+    background:rgba(80,255,120,0.2);
+    color:#7CFC9C;
 }
 
 .node{
     margin-left:18px;
+    font-size:13px;
 }
 
 .toggle{
     cursor:pointer;
     color:#60a5fa;
 }
-
-.key{ color:#93c5fd; }
-.value{ color:#e2e8f0; }
 
 .changed{
     background:rgba(255,80,80,.18);
@@ -83,39 +419,26 @@ input{
     background:rgba(255,255,0,.25);
 }
 
-.diff-badge{
-    float:right;
-    padding:2px 8px;
-    border-radius:12px;
-    font-size:12px;
-    font-weight:bold;
+.search-box{
+    margin:10px 0;
 }
-
-.badge-red{
-    background:rgba(255,80,80,.25);
-    color:#ff8080;
-}
-
-.badge-green{
-    background:rgba(80,255,120,.25);
-    color:#7CFC9C;
-}
-
 </style>
 </head>
 
 <body>
 
-<h2>JSON Deep Comparator</h2>
+<h2>Batch Deep JSON Comparator</h2>
 
-<textarea id="json1" placeholder="Paste JSON 1"></textarea>
-<textarea id="json2" placeholder="Paste JSON 2"></textarea>
+<div class="input-bar">
+    <input id="ids" placeholder="Enter IDs comma separated">
+    <button onclick="runBatch()">Run</button>
+    <button onclick="jumpDiff(-1)">Prev Diff</button>
+    <button onclick="jumpDiff(1)">Next Diff</button>
+</div>
 
-<button onclick="compare()">Compare</button>
-<button onclick="jumpDiff(-1)">Prev Diff</button>
-<button onclick="jumpDiff(1)">Next Diff</button>
-
-<input id="searchBox" placeholder="Search key or value..." oninput="searchTree()"/>
+<input id="searchBox" class="search-box"
+       placeholder="Search within diffs..."
+       oninput="searchTree()">
 
 <div id="output"></div>
 
@@ -125,41 +448,46 @@ let allNodes=[];
 let diffNodes=[];
 let currentDiffIndex=-1;
 
-function compare(){
+async function runBatch(){
 
-    const out=document.getElementById("output");
-    out.innerHTML="";
+    const ids=document.getElementById("ids").value.trim();
+    if(!ids) return;
+
     allNodes=[];
     diffNodes=[];
     currentDiffIndex=-1;
 
-    let j1,j2;
+    const batchId=await fetch("/compare/run",{
+        method:"POST",
+        body:ids
+    }).then(r=>r.text());
 
-    try{
-        j1=JSON.parse(json1.value);
-        j2=JSON.parse(json2.value);
-    }catch(e){
-        alert("Invalid JSON");
-        return;
-    }
+    const data=await fetch("/compare/batch/"+batchId)
+        .then(r=>r.json());
 
-    const arr1=Array.isArray(j1)? j1 : j1["transaction-entry"]||[];
-    const arr2=Array.isArray(j2)? j2 : j2["transaction-entry"]||[];
+    render(data);
+}
 
-    const map2={};
-    arr2.forEach(t=>map2[t["transaction-external-sys-key"]]=t);
+function render(data){
 
-    arr1.forEach(t1=>{
+    const out=document.getElementById("output");
+    out.innerHTML="";
 
-        const key=t1["transaction-external-sys-key"];
-        const t2=map2[key];
+    Object.values(data.idResults).forEach(idRes=>{
+
+        const totalDiff=idRes.uetrResults
+            .reduce((sum,u)=>sum+u.diffs.length,0);
 
         const card=document.createElement("div");
         card.className="card";
 
         const header=document.createElement("div");
         header.className="card-header";
-        header.textContent=key;
+        header.innerHTML=
+            "<span>"+idRes.id+"</span>"+
+            "<span class='badge "+
+            (totalDiff>0?"badge-red":"badge-green")+
+            "'>"+totalDiff+" diffs</span>";
 
         const body=document.createElement("div");
         body.className="card-body";
@@ -169,24 +497,23 @@ function compare(){
                 body.style.display==="block"?"none":"block";
         };
 
-        const startDiffIndex=diffNodes.length;
+        idRes.uetrResults.forEach(u=>{
+            const uDiv=document.createElement("div");
+            uDiv.style.marginTop="10px";
 
-        const tree=buildNode(t1,t2);
-        body.appendChild(tree);
+            const uHeader=document.createElement("div");
+            uHeader.innerHTML="<b>UETR:</b> "+u.uetr+
+            " | <span class='badge "+
+            (u.diffs.length>0?"badge-red":"badge-green")+
+            "'>"+u.diffs.length+" diffs</span>";
 
-        const endDiffIndex=diffNodes.length;
-        const diffCount=endDiffIndex-startDiffIndex;
+            uDiv.appendChild(uHeader);
 
-        if(diffCount>0){
-            header.classList.add("changed");
-        }
+            const tree=buildTree(u.prodPayload,u.apiPayload);
+            uDiv.appendChild(tree);
 
-        const badge=document.createElement("span");
-        badge.className="diff-badge " +
-            (diffCount>0?"badge-red":"badge-green");
-
-        badge.textContent=diffCount+" diff"+(diffCount!==1?"s":"");
-        header.appendChild(badge);
+            body.appendChild(uDiv);
+        });
 
         card.appendChild(header);
         card.appendChild(body);
@@ -194,39 +521,22 @@ function compare(){
     });
 }
 
-function markParentsAsChanged(el){
-
-    let parent=el.parentElement;
-
-    while(parent){
-
-        if(parent.classList?.contains("node") ||
-           parent.classList?.contains("card-header")){
-            parent.classList.add("changed");
-        }
-
-        parent=parent.parentElement;
-    }
-}
-
-function buildNode(a,b){
+function buildTree(a,b){
 
     const container=document.createElement("div");
 
     if(isPrimitive(a)&&isPrimitive(b)){
+        const node=document.createElement("div");
+        node.className="node";
+        node.textContent=a+" | "+b;
 
-        const div=document.createElement("div");
-        div.className="node";
-        div.textContent=`${a} | ${b}`;
-
-        if(a!==b){
-            div.classList.add("changed");
-            diffNodes.push(div);
-            markParentsAsChanged(div);
+        if(JSON.stringify(a)!==JSON.stringify(b)){
+            node.classList.add("changed");
+            diffNodes.push(node);
         }
 
-        allNodes.push(div);
-        return div;
+        allNodes.push(node);
+        return node;
     }
 
     const keys=new Set([
@@ -236,8 +546,8 @@ function buildNode(a,b){
 
     keys.forEach(key=>{
 
-        const v1=a? a[key]:undefined;
-        const v2=b? b[key]:undefined;
+        const v1=a?a[key]:undefined;
+        const v2=b?b[key]:undefined;
 
         const row=document.createElement("div");
         row.className="node";
@@ -253,10 +563,9 @@ function buildNode(a,b){
             toggle.textContent="[+] ";
 
             const label=document.createElement("span");
-            label.className="key";
             label.textContent=key;
 
-            const child=buildNode(v1,v2);
+            const child=buildTree(v1,v2);
             child.style.display="none";
 
             toggle.onclick=()=>{
@@ -269,17 +578,14 @@ function buildNode(a,b){
 
         }else{
 
-            row.innerHTML=`
-                <span class="key">${key}:</span>
-                <span class="value">${JSON.stringify(v1)}</span>
-                |
-                <span class="value">${JSON.stringify(v2)}</span>
-            `;
+            row.innerHTML=
+                "<b>"+key+":</b> "+
+                JSON.stringify(v1)+" | "+
+                JSON.stringify(v2);
 
-            if(v1!==v2){
+            if(JSON.stringify(v1)!==JSON.stringify(v2)){
                 row.classList.add("changed");
                 diffNodes.push(row);
-                markParentsAsChanged(row);
             }
         }
 
@@ -306,9 +612,7 @@ function searchTree(){
             return;
         }
 
-        const text=n.textContent.toLowerCase();
-
-        if(text.includes(term)){
+        if(n.textContent.toLowerCase().includes(term)){
             n.classList.add("match");
             n.style.display="";
             expandParents(n);
@@ -319,14 +623,10 @@ function searchTree(){
 }
 
 function expandParents(el){
-
     let parent=el.parentElement;
-
     while(parent){
-
         if(parent.classList.contains("card-body"))
             parent.style.display="block";
-
         parent=parent.parentElement;
     }
 }
@@ -344,7 +644,6 @@ function jumpDiff(direction){
         currentDiffIndex=diffNodes.length-1;
 
     const target=diffNodes[currentDiffIndex];
-
     expandParents(target);
 
     target.scrollIntoView({
@@ -360,3 +659,5 @@ function jumpDiff(direction){
 
 </body>
 </html>
+""";
+}
