@@ -1,5 +1,74 @@
 
-public List<DiffNode> compare(JsonNode a, JsonNode b, String rootPath) {
+private void compareRecursive(String path,
+                              JsonNode a,
+                              JsonNode b,
+                              List<DiffNode> diffs) {
+
+    // ---------- NULL CASES ----------
+    if (a == null && b != null) {
+        diffs.add(new DiffNode(path, null, b.toString(), "ADDED"));
+        return;
+    }
+
+    if (a != null && b == null) {
+        diffs.add(new DiffNode(path, a.toString(), null, "REMOVED"));
+        return;
+    }
+
+    if (a == null) return;
+
+    // ---------- VALUE NODE ----------
+    if (a.isValueNode() && b.isValueNode()) {
+        if (!a.equals(b)) {
+            diffs.add(new DiffNode(path, a.toString(), b.toString(), "CHANGED"));
+        }
+        return;
+    }
+
+    // ---------- ARRAY HANDLING ----------
+    if (a.isArray() && b.isArray()) {
+
+        // 🔥 Duplicate detection (business rule)
+        checkDuplicateTransactionExternalKey(path, a, diffs);
+        checkDuplicateTransactionExternalKey(path, b, diffs);
+
+        int maxSize = Math.max(a.size(), b.size());
+
+        for (int i = 0; i < maxSize; i++) {
+
+            JsonNode nodeA = i < a.size() ? a.get(i) : null;
+            JsonNode nodeB = i < b.size() ? b.get(i) : null;
+
+            String newPath = path + "[" + i + "]";
+
+            compareRecursive(newPath, nodeA, nodeB, diffs);
+        }
+        return;
+    }
+
+    // ---------- OBJECT HANDLING ----------
+    if (a.isObject() && b.isObject()) {
+
+        Set<String> fields = new HashSet<>();
+        a.fieldNames().forEachRemaining(fields::add);
+        b.fieldNames().forEachRemaining(fields::add);
+
+        for (String field : fields) {
+
+            String newPath = path.isEmpty()
+                    ? "/" + field
+                    : path + "/" + field;
+
+            compareRecursive(newPath,
+                    a.get(field),
+                    b.get(field),
+                    diffs);
+        }
+    }
+}
+
+
+----------
 
     List<DiffNode> diffs = new ArrayList<>();
 
