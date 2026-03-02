@@ -1,3 +1,66 @@
+
+{
+  "transaction-entry": [
+    {
+      "transaction-external-sys-key": "TXN_001",
+      "amount": 1000,
+      "currency": "HKD",
+      "narratives": {
+        "narration1": "Payment A",
+        "narration2": "Invoice 123"
+      },
+      "charges": [
+        {
+          "type": "SERVICE",
+          "value": 10
+        }
+      ]
+    },
+    {
+      "transaction-external-sys-key": "TXN_002",
+      "amount": 500,
+      "currency": "USD",
+      "status": "PENDING"
+    }
+  ]
+}
+
+
+
+
+
+
+{
+  "transaction-entry": [
+    {
+      "transaction-external-sys-key": "TXN_001",
+      "amount": 1200,
+      "currency": "HKD",
+      "narratives": {
+        "narration1": "Payment A",
+        "narration2": "Invoice 999"
+      },
+      "charges": [
+        {
+          "type": "SERVICE",
+          "value": 15
+        }
+      ]
+    },
+    {
+      "transaction-external-sys-key": "TXN_002",
+      "amount": 500,
+      "currency": "EUR",
+      "status": "COMPLETED"
+    }
+  ]
+}
+
+
+
+
+
+
 <!DOCTYPE html>
 <html>
 <head>
