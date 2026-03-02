@@ -1,3 +1,44 @@
+
+public List<DiffNode> compare(JsonNode a, JsonNode b, String rootPath) {
+
+    List<DiffNode> diffs = new ArrayList<>();
+
+    JsonNode nodeA = a;
+    JsonNode nodeB = b;
+
+    if (rootPath != null && !rootPath.isBlank()) {
+
+        // remove leading slash if present
+        String normalized = rootPath.startsWith("/")
+                ? rootPath.substring(1)
+                : rootPath;
+
+        nodeA = a.at("/" + normalized);
+        nodeB = b.at("/" + normalized);
+
+        if (nodeA.isMissingNode() && nodeB.isMissingNode()) {
+            return diffs; // nothing to compare
+        }
+
+        compareRecursive("/" + normalized, nodeA, nodeB, diffs);
+    }
+    else {
+        compareRecursive("", a, b, diffs);
+    }
+
+    return diffs;
+}
+
+---------
+
+  compare(a, b, "/data/customerInfo");
+
+
+
+
+
+
+
 private void checkDuplicateTransactionExternalKey(String path,
                                                   JsonNode arrayNode,
                                                   List<DiffNode> diffs) {
