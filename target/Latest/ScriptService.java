@@ -1,66 +1,4 @@
 
-{
-  "transaction-entry": [
-    {
-      "transaction-external-sys-key": "TXN_001",
-      "amount": 1000,
-      "currency": "HKD",
-      "narratives": {
-        "narration1": "Payment A",
-        "narration2": "Invoice 123"
-      },
-      "charges": [
-        {
-          "type": "SERVICE",
-          "value": 10
-        }
-      ]
-    },
-    {
-      "transaction-external-sys-key": "TXN_002",
-      "amount": 500,
-      "currency": "USD",
-      "status": "PENDING"
-    }
-  ]
-}
-
-
-
-
-
-
-{
-  "transaction-entry": [
-    {
-      "transaction-external-sys-key": "TXN_001",
-      "amount": 1200,
-      "currency": "HKD",
-      "narratives": {
-        "narration1": "Payment A",
-        "narration2": "Invoice 999"
-      },
-      "charges": [
-        {
-          "type": "SERVICE",
-          "value": 15
-        }
-      ]
-    },
-    {
-      "transaction-external-sys-key": "TXN_002",
-      "amount": 500,
-      "currency": "EUR",
-      "status": "COMPLETED"
-    }
-  ]
-}
-
-
-
-
-
-
 <!DOCTYPE html>
 <html>
 <head>
@@ -87,7 +25,8 @@ textarea{
 }
 
 button{
-    padding:8px 16px;
+    padding:8px 14px;
+    margin-right:6px;
     background:#2563eb;
     border:none;
     color:white;
@@ -115,6 +54,7 @@ input{
     padding:10px;
     font-weight:bold;
     cursor:pointer;
+    position:relative;
 }
 
 .card-body{
@@ -135,8 +75,31 @@ input{
 .key{ color:#93c5fd; }
 .value{ color:#e2e8f0; }
 
-.changed{ background:rgba(255,80,80,.18); }
-.match{ background:rgba(255,255,0,.25); }
+.changed{
+    background:rgba(255,80,80,.18);
+}
+
+.match{
+    background:rgba(255,255,0,.25);
+}
+
+.diff-badge{
+    float:right;
+    padding:2px 8px;
+    border-radius:12px;
+    font-size:12px;
+    font-weight:bold;
+}
+
+.badge-red{
+    background:rgba(255,80,80,.25);
+    color:#ff8080;
+}
+
+.badge-green{
+    background:rgba(80,255,120,.25);
+    color:#7CFC9C;
+}
 
 </style>
 </head>
@@ -149,6 +112,8 @@ input{
 <textarea id="json2" placeholder="Paste JSON 2"></textarea>
 
 <button onclick="compare()">Compare</button>
+<button onclick="jumpDiff(-1)">Prev Diff</button>
+<button onclick="jumpDiff(1)">Next Diff</button>
 
 <input id="searchBox" placeholder="Search key or value..." oninput="searchTree()"/>
 
@@ -156,13 +121,17 @@ input{
 
 <script>
 
-let allNodes = [];
+let allNodes=[];
+let diffNodes=[];
+let currentDiffIndex=-1;
 
 function compare(){
 
     const out=document.getElementById("output");
     out.innerHTML="";
     allNodes=[];
+    diffNodes=[];
+    currentDiffIndex=-1;
 
     let j1,j2;
 
@@ -174,13 +143,14 @@ function compare(){
         return;
     }
 
-    const arr1=j1["transaction-entry"]||[];
-    const arr2=j2["transaction-entry"]||[];
+    const arr1=Array.isArray(j1)? j1 : j1["transaction-entry"]||[];
+    const arr2=Array.isArray(j2)? j2 : j2["transaction-entry"]||[];
 
     const map2={};
     arr2.forEach(t=>map2[t["transaction-external-sys-key"]]=t);
 
     arr1.forEach(t1=>{
+
         const key=t1["transaction-external-sys-key"];
         const t2=map2[key];
 
@@ -199,7 +169,24 @@ function compare(){
                 body.style.display==="block"?"none":"block";
         };
 
-        body.appendChild(buildNode(t1,t2));
+        const startDiffIndex=diffNodes.length;
+
+        const tree=buildNode(t1,t2);
+        body.appendChild(tree);
+
+        const endDiffIndex=diffNodes.length;
+        const diffCount=endDiffIndex-startDiffIndex;
+
+        if(diffCount>0){
+            header.classList.add("changed");
+        }
+
+        const badge=document.createElement("span");
+        badge.className="diff-badge " +
+            (diffCount>0?"badge-red":"badge-green");
+
+        badge.textContent=diffCount+" diff"+(diffCount!==1?"s":"");
+        header.appendChild(badge);
 
         card.appendChild(header);
         card.appendChild(body);
@@ -207,15 +194,36 @@ function compare(){
     });
 }
 
+function markParentsAsChanged(el){
+
+    let parent=el.parentElement;
+
+    while(parent){
+
+        if(parent.classList?.contains("node") ||
+           parent.classList?.contains("card-header")){
+            parent.classList.add("changed");
+        }
+
+        parent=parent.parentElement;
+    }
+}
+
 function buildNode(a,b){
 
     const container=document.createElement("div");
 
     if(isPrimitive(a)&&isPrimitive(b)){
+
         const div=document.createElement("div");
         div.className="node";
-        div.innerHTML=`${a} | ${b}`;
-        if(a!==b) div.classList.add("changed");
+        div.textContent=`${a} | ${b}`;
+
+        if(a!==b){
+            div.classList.add("changed");
+            diffNodes.push(div);
+            markParentsAsChanged(div);
+        }
 
         allNodes.push(div);
         return div;
@@ -268,8 +276,11 @@ function buildNode(a,b){
                 <span class="value">${JSON.stringify(v2)}</span>
             `;
 
-            if(v1!==v2)
+            if(v1!==v2){
                 row.classList.add("changed");
+                diffNodes.push(row);
+                markParentsAsChanged(row);
+            }
         }
 
         allNodes.push(row);
@@ -283,13 +294,9 @@ function isPrimitive(v){
     return v===null || typeof v!=="object";
 }
 
-//
-// 🔎 SEARCH ENGINE
-//
 function searchTree(){
 
-    const term=document.getElementById("searchBox")
-        .value.toLowerCase();
+    const term=searchBox.value.toLowerCase();
 
     allNodes.forEach(n=>{
         n.classList.remove("match");
@@ -311,24 +318,42 @@ function searchTree(){
     });
 }
 
-//
-// auto expand parents when match found
-//
 function expandParents(el){
 
     let parent=el.parentElement;
 
     while(parent){
+
         if(parent.classList.contains("card-body"))
             parent.style.display="block";
 
-        if(parent.previousSibling &&
-           parent.previousSibling.classList?.contains("toggle")){
-            parent.style.display="block";
-        }
-
         parent=parent.parentElement;
     }
+}
+
+function jumpDiff(direction){
+
+    if(diffNodes.length===0) return;
+
+    currentDiffIndex+=direction;
+
+    if(currentDiffIndex>=diffNodes.length)
+        currentDiffIndex=0;
+
+    if(currentDiffIndex<0)
+        currentDiffIndex=diffNodes.length-1;
+
+    const target=diffNodes[currentDiffIndex];
+
+    expandParents(target);
+
+    target.scrollIntoView({
+        behavior:"smooth",
+        block:"center"
+    });
+
+    diffNodes.forEach(d=>d.style.outline="none");
+    target.style.outline="2px solid yellow";
 }
 
 </script>
