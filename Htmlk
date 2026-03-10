@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html>
+<head>
+
+<title>Rule Analyzer</title>
+
+<style>
+
+body{
+font-family: Arial;
+margin:40px;
+}
+
+select{
+margin:5px;
+padding:5px;
+}
+
+.rule{
+padding:6px;
+border-bottom:1px solid #ddd;
+}
+
+.pass{
+background:#d4edda;
+}
+
+.fail{
+background:#f8d7da;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<h2>Rule Analyzer</h2>
+
+<input type="file" id="fileInput">
+
+<h3>Filters</h3>
+<div id="filters"></div>
+
+<button onclick="evaluateRules()">Evaluate Rules</button>
+
+<h3>Results</h3>
+<div id="results"></div>
+
+<script>
+
+let rules=[]
+let fieldValues={}
+
+document.getElementById("fileInput").addEventListener("change",function(){
+
+let reader=new FileReader()
+
+reader.onload=function(e){
+
+rules=e.target.result.split("\n")
+
+parseFields()
+
+buildDropdowns()
+
+}
+
+reader.readAsText(this.files[0])
+
+})
+
+
+function parseFields(){
+
+fieldValues={}
+
+const regex=/\\['(.*?)'\\]\\['(.*?)'\\]=='(.*?)'/g
+
+rules.forEach(rule=>{
+
+let match
+
+while((match=regex.exec(rule))!==null){
+
+let section=match[1]
+let field=match[2]
+let value=match[3]
+
+let key=section+"."+field
+
+if(!fieldValues[key]){
+fieldValues[key]=new Set()
+}
+
+fieldValues[key].add(value)
+
+}
+
+})
+
+}
+
+
+function buildDropdowns(){
+
+let container=document.getElementById("filters")
+container.innerHTML=""
+
+Object.entries(fieldValues).forEach(([field,values])=>{
+
+let label=document.createElement("label")
+label.innerText=field
+
+let select=document.createElement("select")
+select.id=field
+
+let empty=document.createElement("option")
+empty.value=""
+empty.text="--Any--"
+select.appendChild(empty)
+
+values.forEach(v=>{
+let option=document.createElement("option")
+option.value=v
+option.text=v
+select.appendChild(option)
+})
+
+container.appendChild(label)
+container.appendChild(select)
+container.appendChild(document.createElement("br"))
+
+})
+
+}
+
+
+function evaluateRules(){
+
+let filters={}
+
+document.querySelectorAll("#filters select").forEach(s=>{
+if(s.value!==""){
+filters[s.id]=s.value
+}
+})
+
+let results=document.getElementById("results")
+results.innerHTML=""
+
+rules.forEach((rule,index)=>{
+
+let pass=true
+
+Object.entries(filters).forEach(([field,value])=>{
+
+let parts=field.split(".")
+let search="['"+parts[0]+"']['"+parts[1]+"']=='"+value+"'"
+
+if(!rule.includes(search)){
+pass=false
+}
+
+})
+
+let div=document.createElement("div")
+div.className="rule "+(pass?"pass":"fail")
+
+div.innerText="Rule "+(index+1)+" : "+rule
+
+if(pass){
+results.appendChild(div)
+}
+
+})
+
+}
+
+</script>
+
+</body>
+</html>
