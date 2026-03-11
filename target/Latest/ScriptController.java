@@ -1,3 +1,91 @@
+package com.company.ruleengine.service;
+
+import com.company.ruleengine.model.Rule;
+import com.company.ruleengine.parser.RuleNormalizer;
+
+import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.*;
+import java.util.*;
+
+@Service
+public class RuleLoader {
+
+    public List<Rule> load(MultipartFile file) throws Exception {
+
+        List<Rule> rules = new ArrayList<>();
+
+        BufferedReader reader =
+                new BufferedReader(
+                        new InputStreamReader(file.getInputStream())
+                );
+
+        String line;
+        int id = 1;
+
+        while((line = reader.readLine()) != null){
+
+            if(line.trim().isEmpty()) continue;
+
+            Rule r = new Rule();
+
+            r.setRuleId(id++);
+            r.setOriginalExpression(line.trim());
+            r.setNormalizedExpression(
+                    RuleNormalizer.normalize(line.trim())
+            );
+
+            rules.add(r);
+        }
+
+        return rules;
+    }
+}
+
+--------
+
+package com.company.ruleengine.controller;
+
+import com.company.ruleengine.model.Rule;
+import com.company.ruleengine.service.*;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.util.*;
+
+@RestController
+@RequestMapping("/rules")
+public class RuleController {
+
+    @Autowired
+    RuleLoader loader;
+
+    @Autowired
+    RuleCompiler compiler;
+
+    private List<Rule> cachedRules;
+
+    @PostMapping("/upload")
+    public List<Rule> upload(
+            @RequestParam("file") MultipartFile file
+    ) throws Exception {
+
+        cachedRules = loader.load(file);
+
+        compiler.compile(cachedRules);
+
+        return cachedRules;
+    }
+}
+
+------
+
+
+
+
 package ruleengine.model;
 
 public class Condition {
